@@ -1,0 +1,25 @@
+# Keep source files consistent across Windows, macOS and Linux.
+* text=auto eol=lf
+
+# Windows command scripts use CRLF in the working tree.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Never normalize binary assets.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.glb binary
+*.bin binary
+*.mp4 binary
+*.webm binary
+*.wav binary
+*.mp3 binary
+*.ogg binary
+*.flac binary
+*.woff binary
+*.woff2 binary
+*.zip binary
