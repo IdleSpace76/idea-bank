@@ -1,3 +1,4 @@
+import { prepareLocalSave } from "./cloud-state";
 import { zip, unzip, type Zippable } from "fflate";
 import { createId, parseLibrary, STORAGE_KEY, type Library, type MediaAsset } from "./ideas";
 import { projectMediaIds, readMediaFiles, removeMediaFiles, saveMediaFiles } from "./media-store";
@@ -94,6 +95,7 @@ export async function readLibraryBackup(file: Blob): Promise<LibraryBackup> {
 
 /** Stages files under fresh IDs; metadata is switched only after the media transaction succeeds. */
 export async function restoreLibraryBackup(backup: LibraryBackup, current: Library): Promise<Library> {
+  prepareLocalSave();
   const expected = localStorage.getItem(STORAGE_KEY);
   const next = parseLibrary(JSON.stringify(backup.library));
   const oldIds = new Set(current.projects.flatMap(projectMediaIds));

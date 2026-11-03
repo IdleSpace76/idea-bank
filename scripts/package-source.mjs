@@ -5,7 +5,7 @@ import { zipSync } from "fflate";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const sourceDirectories = ["app", "components", "lib", "scripts", "tests", "test-models", "docs", ".github"];
-const rootFiles = [".gitattributes", ".gitignore", ".npmrc", ".env.example", ".nvmrc", "LICENSE", "README.md", "package.json", "package-lock.json", "tsconfig.json", "playwright.config.ts", "runIdeaBank.cmd"];
+const rootFiles = [".gitattributes", ".gitignore", ".npmrc", ".env.example", ".nvmrc", "LICENSE", "README.md", "auth.ts", "package.json", "package-lock.json", "tsconfig.json", "playwright.config.ts", "runIdeaBank.cmd"];
 const skippedDirectories = new Set(["node_modules", ".next", ".git", ".npm-cache", "test-results", "playwright-report", "dist", "coverage", "backups", "exports", "private", "uploads", "data"]);
 const privateFilename = /(?:^\.env(?!\.example$)|\.(?:zip|7z|rar|tar|tgz|gz|pem|key|p12|pfx)$|^(?:library\.json|credentials.*\.json|service-account.*\.json|idea-bank-.*\.json)$)/i;
 const textExtension = /\.(?:[cm]?js|tsx?|css|json|md|txt|cmd|gltf)$/i;
@@ -55,7 +55,10 @@ async function inspectSource(relative) {
       const data = JSON.parse(text);
       if (data && Array.isArray(data.sections) && Array.isArray(data.projects)) throw new Error(`Saved library JSON is not a public source file: ${relative}`);
     }
-    if (relative === ".env.example" && text.split(/\r?\n/).some(line => line.trim() && !line.trim().startsWith("#"))) throw new Error("Local mode requires a comment-only .env.example; no credentials should be added yet.");
+    if (relative === ".env.example" && text.split(/\r?\n/).some(line => {
+      const value = line.trim();
+      return value && !value.startsWith("#") && value !== "IDEA_BANK_AUTH_MODE=local" && !/^(?:AUTH_URL|AUTH_SECRET|AUTH_GITHUB_ID|AUTH_GITHUB_SECRET|IDEA_BANK_OWNER_ID|B2_S3_ENDPOINT|B2_REGION|B2_BUCKET_NAME|B2_KEY_ID|B2_APPLICATION_KEY)=$/.test(value);
+    })) throw new Error(".env.example may contain only local mode and empty credential placeholders.");
   }
   return bytes;
 }

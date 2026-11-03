@@ -45,8 +45,7 @@ test("editing can be cancelled, and a project can move to another section", asyn
   await page.getByRole("button", { name: "Создать раздел", exact: true }).last().click();
   await page.goto("/#/project/example");
   await page.getByRole("button", { name: "Изменить", exact: true }).click();
-  await page.getByLabel("Название идеи", { exact: true }).fill("Несохранённое название");
-  page.once("dialog", dialog => dialog.accept());
+  await page.getByLabel("Название", { exact: true }).fill("Несохранённое название");
   await page.getByRole("button", { name: "Отмена", exact: true }).last().click();
   await expect(page.getByRole("heading", { name: "Example", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Действия с идеей", exact: true }).click();

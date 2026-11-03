@@ -19,7 +19,7 @@ test("rich text normalization preserves plain text and rejects unsafe content", 
 test("formatting and links survive save, reload and reopening the editor", async ({ page }, info) => {
   const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
   await page.goto("/#/project/example");
-  await page.getByRole("button", { name: "Изменить", exact: true }).click();
+  await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
   const block = page.locator(".editor-block").first();
   const input = block.getByRole("textbox", { name: "Текст", exact: true });
   await input.fill("Форматированный текст");
@@ -58,7 +58,7 @@ test("formatting and links survive save, reload and reopening the editor", async
 
 test("text position, inline code and old unedited text persist", async ({ page }) => {
   await page.goto("/#/project/example");
-  await page.getByRole("button", { name: "Изменить", exact: true }).click();
+  await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
   const block = page.locator(".editor-block").first();
   await block.getByLabel("Медиа блока 1", { exact: true }).setInputFiles({ name: "pixel.png", mimeType: "image/png", buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a9sAAAAASUVORK5CYII=", "base64") });
   await block.getByLabel("Положение текста блока 1").selectOption("above");

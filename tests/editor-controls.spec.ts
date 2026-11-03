@@ -4,7 +4,7 @@ import { demoLibrary, STORAGE_KEY } from "../lib/ideas";
 test("editor has one add action and a single compact save/cancel pair", async ({ page }) => {
   await page.goto("/#/project/example");
   await expect(page.getByRole("button", { name: "Добавить блок", exact: true })).toHaveCount(1);
-  await page.getByRole("button", { name: "Изменить", exact: true }).click();
+  await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
   await page.mouse.move(0, 0);
   const saves = page.getByRole("button", { name: "Сохранить идею", exact: true });
   const cancels = page.getByRole("button", { name: "Отмена", exact: true });
@@ -17,7 +17,7 @@ test("editor has one add action and a single compact save/cancel pair", async ({
     expect(styles[0].text).toBe(""); expect(styles[0].width).toBe(styles[0].height); expect(styles[0].radius).toBe("50%");
   }
   await expect(page.getByRole("button", { name: "Добавить блок", exact: true })).toHaveCount(1);
-  await page.getByLabel("Название идеи", { exact: true }).fill("Отменённая правка");
+  await page.getByLabel("Заголовок блока", { exact: true }).first().fill("Отменённая правка");
   page.once("dialog", dialog => dialog.accept());
   await cancels.last().click();
   await expect(page.getByRole("heading", { name: "Example", exact: true })).toBeVisible();
@@ -26,7 +26,7 @@ test("editor has one add action and a single compact save/cancel pair", async ({
 test("dragging a block changes its order and persists it", async ({ page, isMobile }) => {
   test.skip(isMobile, "Mouse drag is for desktop; arrow buttons remain available on touch screens.");
   await page.goto("/#/project/example");
-  await page.getByRole("button", { name: "Изменить", exact: true }).click();
+  await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
   await page.getByRole("button", { name: "Перетащить блок 1", exact: true }).dragTo(page.locator(".editor-block").nth(1));
   await expect(page.getByLabel("Заголовок блока").first()).toHaveValue("Медиа и расположение");
   await page.getByRole("button", { name: "Сохранить идею", exact: true }).last().click();

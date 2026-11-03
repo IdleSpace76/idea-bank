@@ -1,13 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
-import { ArrowLeft, ArrowUpRight, BookOpen, Check, ChevronRight, CircleAlert, Code2, Folder, FolderInput, Gamepad2, ImagePlus, LayoutGrid, Lightbulb, LockKeyhole, Monitor, Palette, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Rocket, Search, Trash2 } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, BookOpen, Check, ChevronRight, CircleAlert, Cloud, Code2, Folder, FolderInput, Gamepad2, ImagePlus, LayoutGrid, Lightbulb, LockKeyhole, Monitor, Palette, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Rocket, Search, Trash2 } from "lucide-react";
 import { Dialog } from "./dialog";
 import { DropdownMenu } from "./dropdown-menu";
 import { EditorActions } from "./editor-actions";
 import { SidebarResizer } from "./sidebar-resizer";
 import { ThemePicker } from "./theme-picker";
 import { BackupControls } from "./backup-controls";
+import { CloudSyncControls } from "./cloud-sync-controls";
+import { prepareLocalSave } from "@/lib/cloud-state";
+import { logout } from "@/app/auth-actions";
 import { BlockEditor, ProjectBlocks } from "./project-blocks";
 import { describeMediaFile, mediaIds, projectMediaIds, removeMediaFiles, saveMediaFiles } from "@/lib/media-store";
 import { useMediaSource } from "@/lib/use-media-source";
@@ -31,7 +34,7 @@ function SectionSymbol({ icon }: { icon: SectionIcon }) {
   return <Icon aria-hidden="true" />;
 }
 
-export function IdeaBank() {
+export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope?: string }) {
   const [library, setLibrary] = useState<Library>(demoLibrary);
   const [ready, setReady] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -68,6 +71,7 @@ export function IdeaBank() {
     try { setSidebarCollapsed(localStorage.getItem("idea-bank.sidebar-collapsed") === "true"); } catch { /* Navigation remains available if browser storage is disabled. */ }
     try { const width = Number(localStorage.getItem("idea-bank.sidebar-width")); if (Number.isFinite(width) && width >= 220 && width <= 520) setSidebarWidth(Math.min(width, Math.max(220, innerWidth - 360))); } catch { /* Use the default width when storage is unavailable. */ }
     try {
+      prepareLocalSave();
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw !== null) {
         try { setLibrary(parseLibrary(raw)); }
@@ -115,6 +119,7 @@ export function IdeaBank() {
     if (readOnly || savingRef.current) return false;
     setLibrary(next);
     try {
+      prepareLocalSave();
       localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); setStorageError(""); setMessage(notice);
       const kept = new Set(next.projects.flatMap(projectMediaIds));
       const removed = library.projects.flatMap(projectMediaIds).filter(id => !kept.has(id));
@@ -169,8 +174,8 @@ export function IdeaBank() {
 
   async function saveProject(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (!draft || !draft.name.trim() || savingRef.current || importingRef.current || readOnly) return;
-    const saved = { ...draft, name: draft.name.trim(), updatedAt: new Date().toISOString() };
+    if (!draft || !currentProject || savingRef.current || importingRef.current || readOnly) return;
+    const saved = { ...currentProject, blocks: draft.blocks, updatedAt: new Date().toISOString() };
     savingRef.current = true; setSaving(true); setMediaError("");
     try {
       const referenced = new Set(mediaIds(saved.blocks));
@@ -200,10 +205,22 @@ export function IdeaBank() {
   const missing = (route.screen === "project" && !currentProject) || (route.screen === "section" && !currentSection);
   const projectCount = (sectionId: string) => library.projects.filter(p => p.sectionId === sectionId).length;
 
+  function projectCardMenu(project: Project) {
+    return <DropdownMenu label={`Действия с идеей ${project.name}`} disabled={readOnly || saving} items={[
+      { label: "Изменить", icon: <Pencil />, onSelect: () => setModal({ type: "edit-project", project }) },
+      { label: "Перенести в раздел", icon: <FolderInput />, onSelect: () => setModal({ type: "move-project", project }) },
+      { label: "Удалить идею", icon: <Trash2 />, danger: true, onSelect: () => setModal({ type: "delete-project", project }) },
+    ]} />;
+  }
+
+  function newProjectCard() {
+    return <button className="new-project-card" disabled={readOnly || saving || !library.sections.length} onClick={() => setModal({ type: "new-project", sectionId: route.screen === "section" ? route.id : library.sections[0].id })}><Plus /><span>Новая идея</span></button>;
+  }
+
   function projectCards() {
-    return <div className="project-grid">{visibleProjects.map(p => <button key={p.id} className="project-card" onClick={() => navigate({ screen: "project", id: p.id })}>
+    return <div className="project-grid">{visibleProjects.map(p => <div className="project-card-shell" key={p.id}><button className="project-card" onClick={() => navigate({ screen: "project", id: p.id })}>
       <CoverArt cover={p.cover} image={p.coverImage} title={p.name} /><strong>{p.name}</strong><span className="card-description">{p.description || "Новая идея"}</span><span className="card-category">{library.sections.find(s => s.id === p.sectionId)?.name}<ArrowUpRight /></span>
-    </button>)}{route.screen === "section" && !query && <button className="new-project-card" disabled={readOnly} onClick={() => setModal({ type: "new-project", sectionId: route.id })}><Plus /><span>Новая идея</span></button>}</div>;
+    </button><div className="project-card-menu">{projectCardMenu(p)}</div></div>)}{!query && newProjectCard()}</div>;
   }
 
   return <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`} style={{ "--sidebar-width": sidebarWidth ? `${sidebarWidth}px` : undefined } as CSSProperties}>
@@ -229,43 +246,40 @@ export function IdeaBank() {
 
     <div className="workspace">
       <header className="topbar"><button className="brand mobile-brand" onClick={() => navigate({ screen: "home" })}><span className="brand-mark">i.</span>idea bank</button><div className="topbar-navigation">{sidebarCollapsed && <button className="icon-button sidebar-toggle" type="button" aria-label="Развернуть боковую панель" title="Развернуть боковую панель" aria-controls="library-sidebar" aria-expanded="false" onClick={toggleSidebar}><PanelLeftOpen /></button>}<nav className="breadcrumbs" aria-label="Путь к идее"><button onClick={() => navigate({ screen: "home" })} aria-current={route.screen === "home" ? "page" : undefined}>Библиотека</button>{currentSection && <><ChevronRight /><button onClick={() => navigate({ screen: "section", id: currentSection.id })} aria-current={route.screen === "section" ? "page" : undefined}>{currentSection.name}</button></>}{currentProject && <><ChevronRight /><button onClick={() => navigate({ screen: "project", id: currentProject.id })} aria-current="page">{currentProject.name}</button></>}</nav></div>
-        <div className="topbar-actions"><ThemePicker /><button className={`local-status ${storageError ? "has-warning" : ""}`} onClick={() => setModal({ type: "storage-info" })}>{storageError ? <CircleAlert /> : <Monitor />}<span>На этом устройстве</span></button></div>
+        <div className="topbar-actions"><ThemePicker /><button aria-label={cloudScope ? "Синхронизация" : "На этом устройстве"} title={cloudScope ? "Синхронизация" : "На этом устройстве"} className={`local-status ${storageError ? "has-warning" : ""}`} onClick={() => setModal({ type: "storage-info" })}>{storageError ? <CircleAlert /> : cloudScope ? <Cloud /> : <Monitor />}<span>{cloudScope ? "Синхронизация" : "На этом устройстве"}</span></button>{account && <form action={logout} onSubmit={event => { if (saving || importingMedia || backupBusy || (dirtyRef.current && !window.confirm("Выйти без сохранения изменений?"))) event.preventDefault(); }}><button type="submit" className="secondary-button account-logout" title={`Выполнен вход: ${account}`} disabled={saving || importingMedia || backupBusy}>Выйти</button></form>}</div>
       </header>
 
       {storageError && <div className="storage-warning" role="alert"><CircleAlert /><p>{storageError}</p></div>}
       {!ready ? <main className="page-content loading"><span className="eyebrow">IDEA BANK</span><h1>Открываем библиотеку…</h1></main> : <main className={`page-content ${route.screen === "project" ? "project-page" : route.screen === "section" ? "section-page" : "library-page"}`}>
         {missing ? <div className="empty-state"><Folder /><h1 ref={heading} tabIndex={-1}>Здесь пока ничего нет</h1><p>Возможно, эта идея или раздел уже удалены.</p><button className="primary-button" onClick={() => navigate({ screen: "home" })}>К библиотеке</button></div> : route.screen === "project" && currentProject ? <>
-          <div className="project-toolbar"><button className="back-button" onClick={() => navigate({ screen: "section", id: currentProject.sectionId })}><ArrowLeft />{currentSection?.name}</button><div className="project-actions">{!draft && <><button className="edit-button page-action-button" disabled={readOnly} onClick={() => { returnBlock.current = null; setDraft(structuredClone(currentProject)); }}><Pencil />Изменить</button><DropdownMenu label="Действия с идеей" disabled={readOnly} items={[
+          <div className="project-toolbar"><button className="back-button" onClick={() => navigate({ screen: "section", id: currentProject.sectionId })}><ArrowLeft />{currentSection?.name}</button><div className="project-actions">{!draft && <><button className="edit-button page-action-button" disabled={readOnly} onClick={() => setModal({ type: "edit-project", project: currentProject })}><Pencil />Изменить</button><DropdownMenu label="Действия с идеей" disabled={readOnly} items={[
             { label: "Перенести в раздел", icon: <FolderInput />, onSelect: () => setModal({ type: "move-project", project: currentProject }) },
             { label: "Удалить идею", icon: <Trash2 />, danger: true, onSelect: () => setModal({ type: "delete-project", project: currentProject }) },
           ]} /></>}</div></div>
-          <article className="document">
+          <article className="document"><div className="project-summary"><h1 ref={heading} tabIndex={-1}>{currentProject.name}</h1>{currentProject.description && <p className="page-subtitle">{currentProject.description}</p>}</div><div className="document-rule" />
           {draft ? <form id="project-editor" onSubmit={saveProject}>
-            <fieldset disabled={saving} className="project-fields">
-            <label className="field-label" htmlFor="project-name">Название идеи</label><input id="project-name" className="title-input" value={draft.name} maxLength={100} required pattern=".*\S.*" onChange={e => setDraft({ ...draft, name: e.target.value })} />
-            <label className="field-label" htmlFor="project-description">Краткое описание</label><textarea id="project-description" rows={3} maxLength={1000} value={draft.description} onChange={e => setDraft({ ...draft, description: e.target.value })} />
-            </fieldset>
             <p className="layout-help">Перетаскивай блоки за ручку ⠿ или меняй порядок стрелками. Выбери ширину карточек; на телефоне они выстроятся в один столбец.</p>
             <BlockEditor blocks={draft.blocks} onChange={blocks => setDraft(previous => previous ? { ...previous, blocks } : null)} pending={pendingMedia} onFiles={files => setPendingMedia(previous => new Map([...previous, ...files]))} onError={setMediaError} disabled={saving || importingMedia} onImporting={busy => { importingRef.current = busy; setImportingMedia(busy); }} onAdd={addBlock} />
             {mediaError && <p className="media-save-error" role="alert">{mediaError}</p>}
             {importingMedia && <p className="media-import-status" role="status">Подготавливаем медиа…</p>}
             <div className="editor-save"><EditorActions saving={saving || importingMedia} onCancel={cancelEditing} /></div>
-          </form> : <><div className="project-summary"><h1 ref={heading} tabIndex={-1}>{currentProject.name}</h1>{currentProject.description && <p className="page-subtitle">{currentProject.description}</p>}</div><div className="document-rule" />{currentProject.blocks.length ? <ProjectBlocks blocks={currentProject.blocks} onEdit={editBlock} readOnly={readOnly} /> : <p className="muted">Здесь появятся первые мысли об этой идее.</p>}
+          </form> : <>{currentProject.blocks.length ? <ProjectBlocks blocks={currentProject.blocks} onEdit={editBlock} readOnly={readOnly} /> : <p className="muted">Здесь появятся первые мысли об этой идее.</p>}
             <button className="add-block-button" disabled={readOnly} onClick={addBlock}><Plus />Добавить блок</button></>}
           </article>
         </> : <>
-          <div className="project-toolbar section-back-toolbar">{route.screen === "section" ? <button className="back-button" onClick={() => navigate({ screen: "home" })}><ArrowLeft />Библиотека</button> : <span />}<div className="project-actions"><button className="primary-button page-action-button" disabled={readOnly || !library.sections.length} onClick={() => setModal({ type: "new-project", sectionId: currentSection?.id || library.sections[0].id })}><Plus />Идея</button>{route.screen === "section" && currentSection && sectionMenu(currentSection)}</div></div>
+          <div className="project-toolbar section-back-toolbar">{route.screen === "section" ? <button className="back-button" onClick={() => navigate({ screen: "home" })}><ArrowLeft />Библиотека</button> : <span />}<div className="project-actions"><button className="primary-button page-action-button" disabled={readOnly || !library.sections.length} onClick={() => setModal({ type: "new-project", sectionId: route.screen === "section" ? route.id : library.sections[0].id })}><Plus />Идея</button></div></div>
           <div className="page-heading"><div><h1 ref={heading} tabIndex={-1}>{route.screen === "home" ? <><span className="desktop-title">Все твои идеи.<br />В одном месте.</span><span className="mobile-title">У каждой идеи<br />есть своё место.</span></> : currentSection?.name}</h1><p className="page-subtitle">{route.screen === "home" ? "От случайной мысли до следующей большой идеи." : currentSection?.description}</p></div>
           </div>
 
           {route.screen === "home" && <section className="sections-area" aria-labelledby="sections-heading"><div className="section-heading"><h2 id="sections-heading">Мои разделы</h2></div><div className="section-grid">{library.sections.map(s => <div className="section-card" key={s.id}><button className="section-open" onClick={() => navigate({ screen: "section", id: s.id })}><span className="section-symbol"><SectionSymbol icon={s.icon} /></span><span><strong>{s.name}</strong><small>Идей: {projectCount(s.id)}</small></span></button>{sectionMenu(s, `Действия с разделом ${s.name}`)}</div>)}<button className="new-section-card" disabled={readOnly} onClick={() => setModal({ type: "new-section" })}><Plus /><span>Создать раздел</span></button></div></section>}
 
           <section className={`projects-area ${route.screen === "home" && !query ? "home-projects" : ""}`} aria-label="Идеи"><div className="projects-toolbar"><label className="search-field idea-search"><Search /><input type="search" aria-label="Найти идею" placeholder="Найти идею" value={query} onChange={e => setQuery(e.target.value)} /></label><span>Идей: {visibleProjects.length}</span></div>{projectCards()}{!visibleProjects.length && <div className="empty-inline"><p>{query ? "Таких идей пока нет. Попробуй другое название." : "Место для твоей следующей идеи."}</p></div>}</section>
-          {route.screen === "home" && !!recentProjects.length && !query && <section className="recent-project"><h2>Последние идеи</h2><div className="recent-project-list">{recentProjects.map(project => <button key={project.id} onClick={() => navigate({ screen: "project", id: project.id })}><CoverArt cover={project.cover} image={project.coverImage} title={project.name} small /><span><strong>{project.name}</strong><small>{library.sections.find(s => s.id === project.sectionId)?.name}</small></span><ArrowUpRight /></button>)}</div></section>}
+          {route.screen === "home" && !!recentProjects.length && !query && <section className="recent-project">{!!recentProjects.length && <h2>Последние идеи</h2>}<div className="recent-project-list">{recentProjects.map(project => <div className="recent-project-item" key={project.id}><button onClick={() => navigate({ screen: "project", id: project.id })}><CoverArt cover={project.cover} image={project.coverImage} title={project.name} small /><span><strong>{project.name}</strong><small>{library.sections.find(s => s.id === project.sectionId)?.name}</small></span></button>{projectCardMenu(project)}</div>)}</div></section>}
+
         </>}
       </main>}
       <div className="notice" role="status" aria-live="polite">{message}</div>
-      <footer className="app-footer"><span><LockKeyhole />Личная библиотека</span><button onClick={() => setModal({ type: "storage-info" })}>Локальная версия <ArrowUpRight /></button></footer>
+      <footer className="app-footer"><span><LockKeyhole />Личная библиотека</span><button onClick={() => setModal({ type: "storage-info" })}>{cloudScope ? "Синхронизация и копии" : "Локальная версия"} <ArrowUpRight /></button></footer>
     </div>
 
     {modal && <Dialog title={modalTitle(modal)} closeDisabled={backupBusy} onClose={() => { if (!savingRef.current) setModal(null); }}>
@@ -286,7 +300,9 @@ export function IdeaBank() {
       : modal.type === "delete-section" ? <><p className="dialog-description">Удалить «{modal.section.name}»? Вместе с разделом будут удалены все его идеи ({projectCount(modal.section.id)}). Это действие нельзя отменить.</p><div className="form-actions"><button className="secondary-button" onClick={() => setModal(null)}>Отмена</button><button className="danger-button" onClick={() => removeSection(modal.section)}>Удалить раздел</button></div></>
       : modal.type === "delete-project" ? <><p className="dialog-description">Удалить «{modal.project.name}» и все её текстовые блоки? Это действие нельзя отменить.</p><div className="form-actions"><button className="secondary-button" onClick={() => setModal(null)}>Отмена</button><button className="danger-button" onClick={() => removeProject(modal.project)}>Удалить идею</button></div></>
       : modal.type === "move-project" ? <div className="menu-options">{library.sections.map(s => <button disabled={s.id === modal.project.sectionId} key={s.id} onClick={() => { const moved = { ...modal.project, sectionId: s.id, updatedAt: new Date().toISOString() }; commit({ ...library, projects: library.projects.map(p => p.id === moved.id ? moved : p) }, "Идея перенесена."); setModal(null); }}><SectionSymbol icon={s.icon} /><span>{s.name}</span>{s.id === modal.project.sectionId && <Check />}</button>)}</div>
-      : <><div className="storage-info-icon"><Monitor /></div><p className="dialog-description">Изменения и медиа сохраняются в текущем браузере на этом устройстве. Данные других устройств пока не синхронизируются.</p><p className="dialog-description">GitHub и вход в аккаунт пока не подключены. Очистка данных сайта в браузере удалит локальную библиотеку и вложения.</p><BackupControls library={library} locked={!!draft || importingMedia} readOnly={readOnly} onBusyChange={busy => { savingRef.current = busy; setBackupBusy(busy); }} onRestored={next => {
+      : <><div className="storage-info-icon"><Monitor /></div><p className="dialog-description">Изменения и медиа сохраняются в текущем браузере на этом устройстве. Для переноса на другое устройство используй синхронизацию, если облако подключено, или ZIP-копию.</p><p className="dialog-description">Облачное подключение доступно после входа владельца и настройки B2. Очистка данных сайта в браузере удалит локальную библиотеку и вложения.</p>{cloudScope && <CloudSyncControls scope={cloudScope} library={library} locked={!!draft || importingMedia || backupBusy} readOnly={readOnly} onBusyChange={busy => { savingRef.current = busy; setBackupBusy(busy); }} onDownloaded={next => {
+        setLibrary(next); setStorageError(""); setDraft(null); setPendingMedia(new Map()); setMediaError(""); setQuery(""); setSidebarQuery(""); setExpandedSections({}); setRoute({ screen: "home" }); history.replaceState(null, "", "#/"); setMessage("Библиотека и медиа получены из облака.");
+      }} />}<BackupControls library={library} locked={!!draft || importingMedia || backupBusy} readOnly={readOnly} onBusyChange={busy => { savingRef.current = busy; setBackupBusy(busy); }} onRestored={next => {
         setLibrary(next); setReadOnly(false); setStorageError(""); setDraft(null); setPendingMedia(new Map()); setMediaError(""); setQuery(""); setSidebarQuery(""); setExpandedSections({});
         setRoute({ screen: "home" }); history.replaceState(null, "", "#/"); setModal(null); setMessage("Библиотека и медиа восстановлены из архива."); window.scrollTo({ top: 0, behavior: "instant" });
       }} /><button className="primary-button full-width" disabled={backupBusy} onClick={() => setModal(null)}>Понятно</button></>}
@@ -299,7 +315,7 @@ function modalTitle(modal: Modal): string {
     case "new-section": return "Новый раздел";
     case "edit-section": return "Изменить раздел";
     case "new-project": return "Новая идея";
-    case "edit-project": return "Название и обложка";
+    case "edit-project": return "Изменить идею";
     case "delete-section": return "Удалить раздел?";
     case "delete-project": return "Удалить идею?";
     case "move-project": return "Перенести в раздел";

@@ -1,0 +1,50 @@
+import { expect, test } from "@playwright/test";
+import { demoLibrary, STORAGE_KEY } from "../lib/ideas";
+
+test("idea details and block content are edited independently", async ({ page }) => {
+  await page.goto("/#/project/example");
+  await page.getByRole("button", { name: "Изменить", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Изменить идею", exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(page.locator("#project-editor")).toHaveCount(0);
+  await dialog.getByLabel("Название", { exact: true }).fill("Отдельные настройки идеи");
+  await dialog.getByLabel("Краткое описание", { exact: false }).fill("Описание отдельно от блоков");
+  await dialog.getByRole("button", { name: "Космос", exact: true }).click();
+  await dialog.getByRole("button", { name: "Сохранить", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Отдельные настройки идеи", exact: true })).toBeVisible();
+  let saved = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).projects[0], STORAGE_KEY);
+  expect(saved.blocks).toEqual(demoLibrary.projects[0].blocks);
+  expect(saved.cover).toBe("orbit");
+  await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
+  await expect(page.locator("#project-editor")).toBeVisible();
+  await expect(page.getByLabel("Название идеи", { exact: true })).toHaveCount(0);
+  await expect(page.locator("#project-name, #project-description, #project-editor .project-form")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Отдельные настройки идеи", exact: true })).toBeVisible();
+  await page.getByLabel("Заголовок блока", { exact: true }).first().fill("Изменён только блок");
+  await page.getByRole("button", { name: "Сохранить идею", exact: true }).click();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Изменён только блок", exact: true })).toBeVisible();
+  saved = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).projects[0], STORAGE_KEY);
+  expect(saved.name).toBe("Отдельные настройки идеи"); expect(saved.description).toBe("Описание отдельно от блоков"); expect(saved.cover).toBe("orbit");
+});
+
+test("card edit changes a cover without opening the idea and cancellation preserves its details", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Действия с идеей Example", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Изменить", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByLabel("Название", { exact: true })).toHaveValue("Example");
+  const png = await page.evaluate(() => { const canvas = document.createElement("canvas"); canvas.width = 16; canvas.height = 16; canvas.getContext("2d")!.fillRect(0, 0, 16, 16); return canvas.toDataURL().split(",")[1]; });
+  await dialog.getByLabel("Загрузить свою обложку", { exact: true }).setInputFiles({ name: "updated-cover.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+  await expect(dialog.locator(".cover-file-name")).toHaveText("updated-cover.png");
+  await dialog.getByRole("button", { name: "Сохранить", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(new URL(page.url()).hash).not.toContain("project");
+  const saved = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).projects[0], STORAGE_KEY);
+  expect(saved.coverImage.name).toBe("updated-cover.png"); expect(saved.blocks).toEqual(demoLibrary.projects[0].blocks);
+  await page.getByRole("button", { name: "Действия с идеей Example", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Изменить", exact: true }).click();
+  await dialog.getByLabel("Название", { exact: true }).fill("Не сохранять");
+  await dialog.getByRole("button", { name: "Отмена", exact: true }).click();
+  expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).projects[0].name, STORAGE_KEY)).toBe("Example");
+});

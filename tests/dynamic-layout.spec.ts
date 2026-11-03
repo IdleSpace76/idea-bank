@@ -23,7 +23,7 @@ test("sidebar width changes by dragging and survives reload", async ({ page, isM
 test("drag ghost follows the mouse, previews order, cancels and saves", async ({ page, isMobile }) => {
   test.skip(isMobile, "This check uses a mouse; touch and keyboard alternatives remain available.");
   await page.goto("/#/project/example");
-  await page.getByRole("button", { name: "Изменить", exact: true }).click();
+  await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
   await page.getByLabel("Ширина блока 1", { exact: true }).selectOption("half");
   await page.getByLabel("Ширина блока 2", { exact: true }).selectOption("half");
   const grid = page.locator(".editor-blocks");
@@ -57,7 +57,7 @@ test("drag ghost follows the mouse, previews order, cancels and saves", async ({
 test("neighboring cards glide through intermediate positions while dragging", async ({ page, isMobile }) => {
   test.skip(isMobile, "Mouse animation check.");
   await page.goto("/#/project/example");
-  await page.getByRole("button", { name: "Изменить", exact: true }).click();
+  await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
   await page.getByLabel("Ширина блока 1", { exact: true }).selectOption("half");
   await page.getByLabel("Ширина блока 2", { exact: true }).selectOption("half");
   const handle = page.getByRole("button", { name: "Перетащить блок 1", exact: true });

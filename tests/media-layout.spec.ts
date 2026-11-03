@@ -82,7 +82,7 @@ test("photos, audio, video and block widths survive reload", async ({ page }, te
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath("media-project.png"), fullPage: true });
 
-  await page.getByRole("button", { name: "Изменить", exact: true }).click();
+  await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
   await page.getByRole("button", { name: "Переместить forest.wav влево", exact: true }).click();
   await expect(page.locator(".editor-block .media-item figcaption strong")).toHaveText(["forest.wav", "reference.png", "motion.webm"]);
   await expect(page.getByRole("button", { name: "Переместить forest.wav влево", exact: true })).toBeDisabled();
@@ -90,7 +90,7 @@ test("photos, audio, video and block widths survive reload", async ({ page }, te
   await expect(page.locator("#project-editor")).toHaveCount(0);
   await page.reload();
   await expect(page.locator(".media-item figcaption strong")).toHaveText(["forest.wav", "reference.png", "motion.webm"]);
-  await page.getByRole("button", { name: "Изменить", exact: true }).click();
+  await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
   await page.getByRole("button", { name: "Убрать reference.png", exact: true }).click();
   await page.getByRole("button", { name: "Сохранить идею", exact: true }).last().click();
   await expect(page.locator("#project-editor")).toHaveCount(0);

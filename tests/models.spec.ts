@@ -21,7 +21,7 @@ function fixture() {
 test("GLB renders, rotates, resizes and survives reload", async ({ page, isMobile }, info) => {
   const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
   await page.goto("/#/project/example");
-  await page.getByRole("button", { name: "Изменить", exact: true }).click();
+  await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
   await page.getByLabel("Медиа блока 1", { exact: true }).setInputFiles({ name: "triangle.glb", mimeType: "application/octet-stream", buffer: fixture().glb });
   const model = page.locator(".model-preview");
   await model.scrollIntoViewIfNeeded();
@@ -49,7 +49,7 @@ test("GLB renders, rotates, resizes and survives reload", async ({ page, isMobil
 
 test("glTF resources embed locally and missing resources have a useful error", async ({ page }) => {
   await page.goto("/#/project/example");
-  await page.getByRole("button", { name: "Изменить", exact: true }).click();
+  await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
   const { doc, binary } = fixture();
   const gltf = { ...doc, buffers: [{ uri: "mesh.bin", byteLength: binary.length }] };
   const upload = page.getByLabel("Медиа блока 1", { exact: true });
@@ -67,7 +67,7 @@ test("glTF resources embed locally and missing resources have a useful error", a
   const href = await page.getByRole("link", { name: "Скачать scene.gltf", exact: true }).getAttribute("href");
   const packed = await page.evaluate(async url => JSON.parse(await (await fetch(url!)).text()), href);
   expect(packed.buffers[0].uri).toMatch(/^data:/);
-  await page.getByRole("button", { name: "Изменить", exact: true }).click();
+  await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
   await upload.setInputFiles({ name: "broken.glb", mimeType: "", buffer: Buffer.from("broken model") });
   await page.locator(".model-preview").last().scrollIntoViewIfNeeded();
   await expect(page.locator(".model-preview").last()).toHaveAttribute("data-state", "error", { timeout: 30000 });
@@ -86,7 +86,7 @@ test("a glTF folder keeps nested textures after reload", async ({ page }, info) 
     writeFile(path.join(folder, "README.txt"), "Model documentation"),
   ]);
   await page.goto("/#/project/example");
-  await page.getByRole("button", { name: "Изменить", exact: true }).click();
+  await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
   await page.getByLabel("Папка 3D-модели блока 1", { exact: true }).setInputFiles(folder);
   const model = page.locator(".model-preview"); await model.scrollIntoViewIfNeeded();
   await expect(model).toHaveAttribute("data-state", "ready", { timeout: 30000 });

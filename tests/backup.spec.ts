@@ -129,11 +129,11 @@ test("missing media abort export and unsaved editing locks backup controls", asy
   await page.getByRole("button", { name: "Экспортировать ZIP", exact: true }).click();
   await expect(page.locator(".backup-error")).toContainText("Не найден файл «reference.png»");
   await page.getByRole("button", { name: "Понятно", exact: true }).click();
-  await page.goto("/#/project/example"); await page.getByRole("button", { name: "Изменить", exact: true }).click();
-  await page.getByLabel("Название идеи", { exact: true }).fill("Черновик"); await openBackups(page);
+  await page.goto("/#/project/example"); await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
+  await page.getByLabel("Заголовок блока", { exact: true }).first().fill("Черновик"); await openBackups(page);
   await expect(page.getByRole("button", { name: "Экспортировать ZIP", exact: true })).toBeDisabled();
   await expect(page.getByLabel("Выбрать архив библиотеки", { exact: true })).toBeDisabled();
-  await page.getByRole("button", { name: "Понятно", exact: true }).click(); await expect(page.getByLabel("Название идеи", { exact: true })).toHaveValue("Черновик");
+  await page.getByRole("button", { name: "Понятно", exact: true }).click(); await expect(page.getByLabel("Заголовок блока", { exact: true }).first()).toHaveValue("Черновик");
 });
 
 test("incompatible raw data can be downloaded before explicit recovery", async ({ page }) => {

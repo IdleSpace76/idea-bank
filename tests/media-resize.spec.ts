@@ -21,7 +21,7 @@ async function resize(page: Page, card: Locator, width: number, height: number) 
 test("individual media sizes persist and rows follow the tallest item", async ({ page, isMobile }, info) => {
   test.skip(isMobile, "Multiple media columns require a wide viewport");
   await page.goto("/#/project/example");
-  await page.getByRole("button", { name: "Изменить", exact: true }).click();
+  await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
   await page.getByLabel("Медиа блока 1", { exact: true }).setInputFiles([
     { name: "first.png", mimeType: "image/png", buffer: image },
     { name: "sound.wav", mimeType: "audio/wav", buffer: wav() },
@@ -57,7 +57,7 @@ test("individual media sizes persist and rows follow the tallest item", async ({
 
 test("media resize supports keyboard, drag cancellation and automatic reset", async ({ page }, info) => {
   await page.goto("/#/project/example");
-  await page.getByRole("button", { name: "Изменить", exact: true }).click();
+  await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
   await page.getByLabel("Медиа блока 1", { exact: true }).setInputFiles({ name: "reference.png", mimeType: "image/png", buffer: image });
   const card = page.locator(".media-item"), handle = page.getByRole("button", { name: "Изменить размер reference.png", exact: true });
   await expect.poll(() => card.locator("img").evaluate((el: HTMLImageElement) => el.naturalWidth)).toBe(1);

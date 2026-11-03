@@ -5,13 +5,13 @@ import { STORAGE_KEY } from "../lib/ideas";
 test("themes persist across reload and keep a project draft intact", async ({ page }, info) => {
   const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
   await page.goto("/#/project/example");
-  await page.getByRole("button", { name: "Изменить", exact: true }).click();
-  await page.getByLabel("Название идеи", { exact: true }).fill("Черновик с новой темой");
+  await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
+  await page.getByLabel("Заголовок блока", { exact: true }).first().fill("Черновик с новой темой");
   const before = await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY);
   for (const theme of themes) {
     await page.getByRole("button", { name: "Тема оформления", exact: true }).click();
     await page.getByRole("button", { name: theme.name, exact: true }).click();
-    await expect(page.getByLabel("Название идеи", { exact: true })).toHaveValue("Черновик с новой темой");
+    await expect(page.getByLabel("Заголовок блока", { exact: true }).first()).toHaveValue("Черновик с новой темой");
     expect(await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY)).toBe(before);
     expect(await page.evaluate(key => localStorage.getItem(key), THEME_KEY)).toBe(theme.id);
     const contrast = await page.evaluate(() => {
