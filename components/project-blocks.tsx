@@ -1,4 +1,5 @@
 "use client";
+import { useI18n } from "./language-picker";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, GripVertical, ImagePlus, Pencil, Plus, Trash2 } from "lucide-react";
@@ -20,8 +21,9 @@ type BlockEditorProps = {
 };
 
 export function ProjectBlocks({ blocks, onEdit, readOnly }: { blocks: TextBlock[]; onEdit: (id: string) => void; readOnly?: boolean }) {
+  const { t } = useI18n();
   return <div className="content-block-grid">{blocks.map((block, index) => <section id={`block-${block.id}`} className={`content-block block-${block.width || "full"}`} key={block.id}>
-    <button type="button" className="icon-button edit-block-button" aria-label={`Редактировать блок ${index + 1}`} title="Редактировать блок" disabled={readOnly} onClick={() => onEdit(block.id)}><Pencil /></button>
+    <button type="button" className="icon-button edit-block-button" aria-label={t("Редактировать блок {0}", { 0: index + 1 })} title={t("Редактировать блок")} disabled={readOnly} onClick={() => onEdit(block.id)}><Pencil /></button>
     {block.heading && <h2 style={block.headingFontSize ? { fontSize: `${block.headingFontSize}px` } : undefined}>{block.heading}</h2>}
     {block.textPosition === "above" && <FormattedText text={block.text} document={block.richText} />}
     <MediaGallery assets={block.media || []} />
@@ -30,6 +32,7 @@ export function ProjectBlocks({ blocks, onEdit, readOnly }: { blocks: TextBlock[
 }
 
 export function BlockEditor({ blocks, onChange, pending, onFiles, onError, disabled, onAdd, onImporting }: BlockEditorProps) {
+  const { t } = useI18n();
   const currentBlocks = useRef(blocks); currentBlocks.current = blocks;
   const mounted = useRef(true);
   const importing = useRef(false);
@@ -121,7 +124,7 @@ export function BlockEditor({ blocks, onChange, pending, onFiles, onError, disab
   function drop() {
     if (order.current.length === blocks.length && order.current.some((id, index) => id !== blocks[index].id)) {
       const next = order.current.map(id => blocks.find(block => block.id === id)!); onChange(next);
-      setAnnouncement(`Блок перемещён на позицию ${order.current.indexOf(dragged.current!) + 1}.`);
+      setAnnouncement(t("Блок перемещён на позицию {0}.", { 0: order.current.indexOf(dragged.current!) + 1 }));
     }
     endDrag();
   }
@@ -134,8 +137,8 @@ export function BlockEditor({ blocks, onChange, pending, onFiles, onError, disab
       const result = await prepareMediaFiles(files);
       if (!mounted.current) return;
       if (result.assets.length) { onFiles(result.blobs); onChange(currentBlocks.current.map(current => current.id === block.id ? { ...current, media: [...(current.media || []), ...result.assets] } : current)); }
-      onError(result.errors.length ? `Не удалось добавить: ${result.errors.join("; ")}` : "");
-    } catch { if (mounted.current) onError("Не удалось прочитать файлы. Попробуй выбрать их ещё раз."); }
+      onError(result.errors.length ? t("Не удалось добавить: {0}", { 0: result.errors.join("; ") }) : "");
+    } catch { if (mounted.current) onError(t("Не удалось прочитать файлы. Попробуй выбрать их ещё раз.")); }
     finally { importing.current = false; if (mounted.current) onImporting(false); }
   }
 
@@ -145,20 +148,20 @@ export function BlockEditor({ blocks, onChange, pending, onFiles, onError, disab
     if (!pointer.current.active && Math.hypot(e.clientX - pointer.current.startX, e.clientY - pointer.current.startY) > 5) { pointer.current.active = true; startGhost(dragged.current); setDragging(dragged.current); }
     if (pointer.current.active) { positionGhost(); findTarget(); }
   }} onPointerUp={e => { if (!dragged.current) return; if (pointer.current.active) { findTarget(); drop(); } else endDrag(); if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); }} onPointerCancel={endDrag} onLostPointerCapture={() => { if (dragged.current) endDrag(); }}>{displayedBlocks.map((block, index) => <fieldset id={`block-${block.id}`} data-block-id={block.id} className={`editor-block block-${block.width || "full"} ${dragging === block.id ? "is-dragging" : ""} ${dropTarget === block.id && dragging !== block.id ? "is-drop-target" : ""}`} key={block.id} disabled={disabled}>
-    <legend>Блок {index + 1}</legend>
-    <div className="block-settings"><button type="button" className="icon-button drag-handle" disabled={disabled} aria-label={`Перетащить блок ${index + 1}`} onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); e.currentTarget.focus({ preventScroll: true }); grid.current!.setPointerCapture(e.pointerId); dragged.current = block.id; order.current = blocks.map(block => block.id); lastReorder.current = 0; pointer.current = { x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY, active: false, target: "" }; }}><GripVertical /></button><label className="block-width-label">Ширина<select aria-label={`Ширина блока ${index + 1}`} value={block.width || "full"} onChange={e => update(block.id, { width: e.target.value as BlockWidth })}><option value="full">Вся строка</option><option value="half">½ строки</option><option value="third">⅓ строки</option></select></label><div className="block-controls">
-      <button type="button" className="icon-button" aria-label={`Поднять блок ${index + 1}`} disabled={index === 0} onClick={() => move(index, -1)}><ArrowUp /></button>
-      <button type="button" className="icon-button" aria-label={`Опустить блок ${index + 1}`} disabled={index === blocks.length - 1} onClick={() => move(index, 1)}><ArrowDown /></button>
-      <button type="button" className="icon-button danger" aria-label={`Удалить блок ${index + 1}`} onClick={() => { if ((!block.text && !block.heading && !block.media?.length) || window.confirm("Удалить этот блок вместе с вложениями?")) onChange(blocks.filter(b => b.id !== block.id)); }}><Trash2 /></button>
+    <legend>{t("Блок ")}{index + 1}</legend>
+    <div className="block-settings"><button type="button" className="icon-button drag-handle" disabled={disabled} aria-label={t("Перетащить блок {0}", { 0: index + 1 })} onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); e.currentTarget.focus({ preventScroll: true }); grid.current!.setPointerCapture(e.pointerId); dragged.current = block.id; order.current = blocks.map(block => block.id); lastReorder.current = 0; pointer.current = { x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY, active: false, target: "" }; }}><GripVertical /></button><label className="block-width-label">{t("Ширина")}<select aria-label={t("Ширина блока {0}", { 0: index + 1 })} value={block.width || "full"} onChange={e => update(block.id, { width: e.target.value as BlockWidth })}><option value="full">{t("Вся строка")}</option><option value="half">{t("½ строки")}</option><option value="third">{t("⅓ строки")}</option></select></label><div className="block-controls">
+      <button type="button" className="icon-button" aria-label={t("Поднять блок {0}", { 0: index + 1 })} disabled={index === 0} onClick={() => move(index, -1)}><ArrowUp /></button>
+      <button type="button" className="icon-button" aria-label={t("Опустить блок {0}", { 0: index + 1 })} disabled={index === blocks.length - 1} onClick={() => move(index, 1)}><ArrowDown /></button>
+      <button type="button" className="icon-button danger" aria-label={t("Удалить блок {0}", { 0: index + 1 })} onClick={() => { if ((!block.text && !block.heading && !block.media?.length) || window.confirm(t("Удалить этот блок вместе с вложениями?"))) onChange(blocks.filter(b => b.id !== block.id)); }}><Trash2 /></button>
     </div></div>
-    <label className="field-label" htmlFor={`heading-${block.id}`}>Заголовок блока</label><div className="block-heading-field"><input id={`heading-${block.id}`} value={block.heading} style={block.headingFontSize ? { fontSize: `${block.headingFontSize}px` } : undefined} maxLength={200} placeholder="Без заголовка" onChange={e => update(block.id, { heading: e.target.value })} /><label className="heading-size-label"><span className="sr-only">Размер заголовка блока {index + 1}</span><select aria-label={`Размер заголовка блока ${index + 1}`} title="Размер шрифта заголовка" value={block.headingFontSize || 24} onChange={e => update(block.id, { headingFontSize: Number(e.target.value) === 24 ? undefined : Number(e.target.value) })}>{[12, 14, 16, 18, 20, 21, 24, 28, 32, 36, 40, 48].map(size => <option key={size} value={size}>{size} px{size === 24 ? " · по умолчанию" : ""}</option>)}</select></label></div>
-    <label className="text-position-label">Положение текста<select aria-label={`Положение текста блока ${index + 1}`} value={block.textPosition || "below"} onChange={e => update(block.id, { textPosition: e.target.value as "above" | "below" })}><option value="above">Над медиа</option><option value="below">Под медиа</option></select></label>
-    {block.textPosition === "above" && <div key="block-text" className="block-text-field"><label className="field-label" id={`text-${block.id}-label`} htmlFor={`text-${block.id}`}>Текст</label><RichTextEditor id={`text-${block.id}`} text={block.text} document={block.richText} disabled={disabled} onChange={fields => update(block.id, fields)} /></div>}
+    <label className="field-label" htmlFor={`heading-${block.id}`}>{t("Заголовок блока")}</label><div className="block-heading-field"><input id={`heading-${block.id}`} value={block.heading} style={block.headingFontSize ? { fontSize: `${block.headingFontSize}px` } : undefined} maxLength={200} placeholder={t("Без заголовка")} onChange={e => update(block.id, { heading: e.target.value })} /><label className="heading-size-label"><span className="sr-only">{t("Размер заголовка блока ")}{index + 1}</span><select aria-label={t("Размер заголовка блока {0}", { 0: index + 1 })} title={t("Размер шрифта заголовка")} value={block.headingFontSize || 24} onChange={e => update(block.id, { headingFontSize: Number(e.target.value) === 24 ? undefined : Number(e.target.value) })}>{[12, 14, 16, 18, 20, 21, 24, 28, 32, 36, 40, 48].map(size => <option key={size} value={size}>{size} px{size === 24 ? t(" · по умолчанию") : ""}</option>)}</select></label></div>
+    <label className="text-position-label">{t("Положение текста")}<select aria-label={t("Положение текста блока {0}", { 0: index + 1 })} value={block.textPosition || "below"} onChange={e => update(block.id, { textPosition: e.target.value as "above" | "below" })}><option value="above">{t("Над медиа")}</option><option value="below">{t("Под медиа")}</option></select></label>
+    {block.textPosition === "above" && <div key="block-text" className="block-text-field"><label className="field-label" id={`text-${block.id}-label`} htmlFor={`text-${block.id}`}>{t("Текст")}</label><RichTextEditor id={`text-${block.id}`} text={block.text} document={block.richText} disabled={disabled} onChange={fields => update(block.id, fields)} /></div>}
     <MediaGallery assets={block.media || []} pending={pending} onRemove={id => update(block.id, { media: (block.media || []).filter(asset => asset.id !== id) })} onReorder={media => update(block.id, { media })} onResize={(id, displaySize) => update(block.id, { media: (block.media || []).map(asset => asset.id === id ? { ...asset, displaySize } : asset) })} />
-    <label className="media-upload"><ImagePlus /><span>Добавить фото, видео, аудио или 3D-модель</span><input type="file" multiple accept="image/*,video/*,audio/*,.glb,.gltf,.bin" aria-label={`Медиа блока ${index + 1}`} onChange={e => { void addFiles(block, Array.from(e.target.files || [])); e.target.value = ""; }} /></label>
-    <label className="model-folder-upload">Загрузить папку glTF<input type="file" {...{ webkitdirectory: "", directory: "" }} multiple aria-label={`Папка 3D-модели блока ${index + 1}`} onChange={e => { void addFiles(block, Array.from(e.target.files || [])); e.target.value = ""; }} /></label>
-    {block.textPosition !== "above" && <div key="block-text" className="block-text-field"><label className="field-label" id={`text-${block.id}-label`} htmlFor={`text-${block.id}`}>Текст</label><RichTextEditor id={`text-${block.id}`} text={block.text} document={block.richText} disabled={disabled} onChange={fields => update(block.id, fields)} /></div>}
+    <label className="media-upload"><ImagePlus /><span>{t("Добавить фото, видео, аудио или 3D-модель")}</span><input type="file" multiple accept="image/*,video/*,audio/*,.glb,.gltf,.bin" aria-label={t("Медиа блока {0}", { 0: index + 1 })} onChange={e => { void addFiles(block, Array.from(e.target.files || [])); e.target.value = ""; }} /></label>
+    <label className="model-folder-upload">{t("Загрузить папку glTF")}<input type="file" {...{ webkitdirectory: "", directory: "" }} multiple aria-label={t("Папка 3D-модели блока {0}", { 0: index + 1 })} onChange={e => { void addFiles(block, Array.from(e.target.files || [])); e.target.value = ""; }} /></label>
+    {block.textPosition !== "above" && <div key="block-text" className="block-text-field"><label className="field-label" id={`text-${block.id}-label`} htmlFor={`text-${block.id}`}>{t("Текст")}</label><RichTextEditor id={`text-${block.id}`} text={block.text} document={block.richText} disabled={disabled} onChange={fields => update(block.id, fields)} /></div>}
   </fieldset>)}</div>
-    <button type="button" className="add-block-button" disabled={disabled} onClick={onAdd}><Plus />Добавить блок</button><span className="sr-only" role="status" aria-live="polite">{announcement}</span>
+    <button type="button" className="add-block-button" disabled={disabled} onClick={onAdd}><Plus />{t("Добавить блок")}</button><span className="sr-only" role="status" aria-live="polite">{t(announcement)}</span>
   </>;
 }

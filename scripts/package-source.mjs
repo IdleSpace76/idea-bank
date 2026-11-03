@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { zipSync } from "fflate";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const sourceDirectories = ["app", "components", "lib", "scripts", "tests", "test-models", "docs", ".github"];
+const sourceDirectories = ["app", "components", "lib", "public", "scripts", "tests", "test-models", "docs", ".github"];
 const rootFiles = [".gitattributes", ".gitignore", ".npmrc", ".env.example", ".nvmrc", "LICENSE", "README.md", "auth.ts", "package.json", "package-lock.json", "tsconfig.json", "playwright.config.ts", "runIdeaBank.cmd"];
 const skippedDirectories = new Set(["node_modules", ".next", ".git", ".npm-cache", "test-results", "playwright-report", "dist", "coverage", "backups", "exports", "private", "uploads", "data"]);
 const privateFilename = /(?:^\.env(?!\.example$)|\.(?:zip|7z|rar|tar|tgz|gz|pem|key|p12|pfx)$|^(?:library\.json|credentials.*\.json|service-account.*\.json|idea-bank-.*\.json)$)/i;

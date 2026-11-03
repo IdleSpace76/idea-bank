@@ -1,4 +1,6 @@
 "use client";
+import { translate as t } from "./i18n";
+
 
 import { useEffect, useState } from "react";
 import { readMediaFile } from "./media-store";
@@ -16,9 +18,9 @@ export function useMediaSource(id?: string, file?: Blob) {
       try {
         const blob = file || await readMediaFile(id!);
         if (cancelled) return;
-        if (!blob) { setError("Файл не найден на этом устройстве."); return; }
+        if (!blob) { setError(t("Файл не найден на этом устройстве.")); return; }
         url = URL.createObjectURL(blob); setSource(url);
-      } catch { if (!cancelled) setError("Не удалось открыть файл из хранилища браузера."); }
+      } catch { if (!cancelled) setError(t("Не удалось открыть файл из хранилища браузера.")); }
     }
     void load();
     return () => { cancelled = true; if (url) URL.revokeObjectURL(url); };

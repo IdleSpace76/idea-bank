@@ -1,8 +1,10 @@
 "use client";
+import { useI18n } from "./language-picker";
 
 import { useEffect, useRef } from "react";
 
 export function SidebarResizer({ width, onChange, onCommit, onReset }: { width: number | null; onChange: (width: number) => void; onCommit: (width: number) => void; onReset: () => void }) {
+  const { t } = useI18n();
   const active = useRef(false);
   const lastWidth = useRef(width || 242);
   useEffect(() => () => { document.body.classList.remove("is-sidebar-resizing"); }, []);
@@ -11,7 +13,7 @@ export function SidebarResizer({ width, onChange, onCommit, onReset }: { width: 
     if (!active.current) return;
     active.current = false; document.body.classList.remove("is-sidebar-resizing"); onCommit(lastWidth.current);
   }
-  return <div className="sidebar-resizer" role="separator" tabIndex={0} aria-label="Ширина боковой панели" aria-orientation="vertical" aria-valuemin={220} aria-valuemax={520} aria-valuenow={width || 242} onDoubleClick={onReset} onPointerDown={e => {
+  return <div className="sidebar-resizer" role="separator" tabIndex={0} aria-label={t("Ширина боковой панели")} aria-orientation="vertical" aria-valuemin={220} aria-valuemax={520} aria-valuenow={width || 242} onDoubleClick={onReset} onPointerDown={e => {
     if (e.button !== 0) return;
     e.preventDefault(); active.current = true; e.currentTarget.setPointerCapture(e.pointerId); document.body.classList.add("is-sidebar-resizing");
     lastWidth.current = limit(e.clientX); onChange(lastWidth.current);

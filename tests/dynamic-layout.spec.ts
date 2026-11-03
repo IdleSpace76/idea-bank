@@ -39,19 +39,19 @@ test("drag ghost follows the mouse, previews order, cancels and saves", async ({
     await page.mouse.move(to.x + to.width * .8, to.y + 80, { steps: 15 });
     const after = (await page.locator(".block-drag-ghost").boundingBox())!;
     expect(after.x).toBeGreaterThan(before.x + 50);
-    await expect(grid.getByLabel("Заголовок блока").first()).toHaveValue("Медиа и расположение");
+    await expect(grid.getByLabel("Заголовок блока").first()).toHaveValue("Media and layout");
   }
   await drag();
   await page.keyboard.press("Escape"); await page.mouse.up();
   await expect(page.locator(".block-drag-ghost")).toHaveCount(0);
-  await expect(grid.getByLabel("Заголовок блока").first()).toHaveValue("Начни с идеи");
+  await expect(grid.getByLabel("Заголовок блока").first()).toHaveValue("Start with an idea");
   await drag(); await page.mouse.up();
   await expect(page.locator(".block-drag-ghost")).toHaveCount(0);
-  await expect(grid.getByLabel("Заголовок блока").first()).toHaveValue("Медиа и расположение");
+  await expect(grid.getByLabel("Заголовок блока").first()).toHaveValue("Media and layout");
   await page.getByRole("button", { name: "Сохранить идею", exact: true }).click();
   await expect(page.locator("#project-editor")).toHaveCount(0);
   await page.reload();
-  await expect(page.locator(".content-block h2").first()).toHaveText("Медиа и расположение");
+  await expect(page.locator(".content-block h2").first()).toHaveText("Media and layout");
 });
 
 test("neighboring cards glide through intermediate positions while dragging", async ({ page, isMobile }) => {

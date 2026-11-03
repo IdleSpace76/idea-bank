@@ -1,3 +1,4 @@
+import { exampleMedia } from "./example-media";
 import { normalizeRichText, type RichDocument } from "./rich-text";
 
 export const STORAGE_KEY = "idea-bank.library.v1";
@@ -37,29 +38,28 @@ const date = "2026-11-02T08:00:00.000Z";
 /** Public starter content; personal libraries are stored separately in the browser. */
 export const demoLibrary: Library = {
   version: 1,
-  sections: [
-    { id: "examples", name: "Примеры", description: "Начни с Example, а затем создай свои разделы и идеи.", icon: "lightbulb" },
-  ],
+  sections: [{ id: "examples", name: "Examples", description: "Start with Example, then create your own sections and ideas.", icon: "lightbulb" }],
   projects: [{
     id: "example", sectionId: "examples", name: "Example",
-    description: "Пример идеи: текст, оформление, медиа и расположение блоков. Его можно изменить или удалить.",
+    description: "A sample idea with formatted text, a robot image and an interactive 3D model. Edit it, or replace it with your own ideas.",
     cover: "forest", updatedAt: date,
     blocks: [
       {
-        id: "example-start", heading: "Начни с идеи", text: "Это Example — единственная идея в стартовой библиотеке. Создай свой раздел и добавь в него новую идею.\n\nВ редакторе можно выделить важное, добавить курсив, подчеркнуть текст или вставить код. Используй панель над текстом.\n\nИзменения сохраняются кнопкой с галочкой внизу справа.",
-        width: "full",
+        id: "example-start", heading: "Start with an idea", width: "full",
+        text: "This is Example, the only idea in your starter library. Create a section and add your own idea.\n\nUse the toolbar to make text bold, italic or underlined, add inline code, change colors and sizes, or insert a link.\n\nSave changes with the checkmark button at the bottom right. Sync after saving to make them available on your other devices.",
         richText: { type: "doc", content: [
-          { type: "paragraph", content: [{ type: "text", text: "Это " }, { type: "text", text: "Example", marks: [{ type: "bold" }] }, { type: "text", text: " — единственная идея в стартовой библиотеке. Создай свой раздел и добавь в него новую идею." }] },
-          { type: "paragraph", content: [{ type: "text", text: "В редакторе можно " }, { type: "text", text: "выделить важное", marks: [{ type: "bold" }] }, { type: "text", text: ", добавить " }, { type: "text", text: "курсив", marks: [{ type: "italic" }] }, { type: "text", text: ", " }, { type: "text", text: "подчеркнуть текст", marks: [{ type: "underline" }] }, { type: "text", text: " или вставить " }, { type: "text", text: "код", marks: [{ type: "code" }] }, { type: "text", text: ". Используй панель над текстом." }] },
-          { type: "paragraph", content: [{ type: "text", text: "Изменения сохраняются кнопкой с галочкой внизу справа." }] },
-        ] },
+          { type: "paragraph", content: [{ type: "text", text: "This is " }, { type: "text", text: "Example", marks: [{ type: "bold" }] }, { type: "text", text: ", the only idea in your starter library. Create a section and add your own idea." }] },
+          { type: "paragraph", content: [{ type: "text", text: "Use the toolbar to make text " }, { type: "text", text: "bold", marks: [{ type: "bold" }] }, { type: "text", text: ", " }, { type: "text", text: "italic", marks: [{ type: "italic" }] }, { type: "text", text: " or " }, { type: "text", text: "underlined", marks: [{ type: "underline" }] }, { type: "text", text: ", add " }, { type: "text", text: "inline code", marks: [{ type: "code" }] }, { type: "text", text: ", change colors and sizes, or insert a link." }] },
+          { type: "paragraph", content: [{ type: "text", text: "Save changes with the checkmark button at the bottom right. Sync after saving to make them available on your other devices." }] }
+        ] }
       },
       {
-        id: "example-media", heading: "Медиа и расположение", width: "half", textPosition: "above",
-        text: "В один блок можно добавить фото, видео, аудио и 3D-модели GLB/glTF. Для составной glTF-модели выбери папку с её ресурсами.\n\nЭтот блок занимает половину строки. Добавь рядом ещё один, настрой ширину и перетащи карточки за ручку. Каждое медиа можно растянуть отдельно, а текст разместить над ним или под ним.\n\nСделай резервную копию через «Локальная версия» → «Экспортировать ZIP». Пока облако не подключено, данные хранятся в этом браузере.",
-      },
-    ],
-  }],
+        id: "example-media", heading: "Media and layout", width: "half", textPosition: "above",
+        text: "Here is a little robot, shown as an image and as an interactive 3D model. Drag the model to rotate it and zoom to explore it.\n\nIn the editor, resize each media frame independently and change their order. You can also add your own photos, video, audio and GLB/glTF models.\n\nThis block takes half a row. Add another block alongside it, change its width, or drag blocks by their handles. Export a ZIP backup to keep a copy of your text and all attachments.",
+        media: exampleMedia,
+      }
+    ]
+  }]
 };
 
 export function createId(): string {

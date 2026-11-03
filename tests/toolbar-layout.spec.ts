@@ -11,7 +11,7 @@ test("idea action matches the edit/menu pair and follows the header's right edge
     expect(home.x + home.width).toBeCloseTo(header.x + header.width, 0);
     expect(home.height).toBe(48);
     await page.goto("/#/section/examples");
-    await expect(page.getByRole("heading", { name: "Примеры", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Examples", exact: true })).toBeVisible();
     const section = (await idea.boundingBox())!;
     expect(section.width).toBeCloseTo(home.width, 0);
     expect(section.x + section.width).toBeCloseTo(header.x + header.width, 0);

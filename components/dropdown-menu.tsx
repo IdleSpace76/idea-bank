@@ -2,12 +2,12 @@
 
 import { useLayoutEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Ellipsis } from "lucide-react";
+import { Check, Ellipsis } from "lucide-react";
 
-type MenuItem = { label: string; icon: ReactNode; onSelect: () => void; danger?: boolean };
+type MenuItem = { label: string; icon: ReactNode; onSelect: () => void; danger?: boolean; selected?: boolean };
 
 /** Anchors actions to their trigger, keeping the menu inside the viewport. */
-export function DropdownMenu({ label, items, disabled }: { label: string; items: MenuItem[]; disabled?: boolean }) {
+export function DropdownMenu({ label, items, disabled, triggerContent, triggerClassName }: { label: string; items: MenuItem[]; disabled?: boolean; triggerContent?: ReactNode; triggerClassName?: string }) {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -35,7 +35,7 @@ export function DropdownMenu({ label, items, disabled }: { label: string; items:
     return () => { document.removeEventListener("pointerdown", outside); window.removeEventListener("resize", reposition); window.removeEventListener("scroll", scroll, true); };
   }, [open]);
 
-  return <><button ref={trigger} type="button" className="icon-button" aria-label={label} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined} disabled={disabled} onClick={() => setOpen(value => !value)} onKeyDown={e => { if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); setOpen(true); } }}><Ellipsis /></button>
+  return <><button ref={trigger} type="button" className={triggerClassName || "icon-button"} aria-label={label} title={label} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined} disabled={disabled} onClick={() => setOpen(value => !value)} onKeyDown={e => { if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); setOpen(true); } }}>{triggerContent || <Ellipsis />}</button>
     {open && createPortal(<div id={id} ref={menu} className="dropdown-menu" role="menu" aria-label={label} style={position} onKeyDown={e => {
       const buttons = Array.from(menu.current!.querySelectorAll<HTMLButtonElement>("button"));
       const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
@@ -45,6 +45,6 @@ export function DropdownMenu({ label, items, disabled }: { label: string; items:
         e.preventDefault();
         buttons[e.key === "Home" ? 0 : e.key === "End" ? buttons.length - 1 : (index + (e.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length]?.focus();
       }
-    }}>{items.map(item => <button type="button" role="menuitem" key={item.label} className={item.danger ? "danger" : ""} onClick={() => { close(true); item.onSelect(); }}>{item.icon}<span>{item.label}</span></button>)}</div>, document.body)}
+    }}>{items.map(item => <button type="button" role={item.selected === undefined ? "menuitem" : "menuitemradio"} aria-checked={item.selected} key={item.label} className={item.danger ? "danger" : ""} onClick={() => { close(true); item.onSelect(); }}>{item.icon}<span>{item.label}</span>{item.selected && <Check className="menu-selection" aria-hidden="true" />}</button>)}</div>, document.body)}
   </>;
 }

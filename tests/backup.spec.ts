@@ -20,7 +20,7 @@ async function seed(page: Page, library: Library, media: { id: string; mime: str
   await expect(page.locator("main h1")).toBeVisible();
   await page.evaluate(async ({ library, media, key }) => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open("idea-bank.media.v1", 1); request.onupgradeneeded = () => request.result.createObjectStore("files"); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
-    await new Promise<void>((resolve, reject) => { const tx = db.transaction("files", "readwrite"); for (const file of media) tx.objectStore("files").put(new Blob([Uint8Array.from(atob(file.base64), char => char.charCodeAt(0))], { type: file.mime }), file.id); tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); });
+    await new Promise<void>((resolve, reject) => { const tx = db.transaction("files", "readwrite"); tx.objectStore("files").clear(); for (const file of media) tx.objectStore("files").put(new Blob([Uint8Array.from(atob(file.base64), char => char.charCodeAt(0))], { type: file.mime }), file.id); tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); });
     db.close(); localStorage.setItem(key, JSON.stringify(library));
   }, { library, media, key: STORAGE_KEY });
   await page.reload();
@@ -67,7 +67,7 @@ test("a ZIP transfers covers, rich text, layout and every media kind to a clean 
   const bytes = await readFile((await download.path())!), exported = unzipSync(bytes), manifest = JSON.parse(strFromU8(exported["manifest.json"]));
   expect(JSON.parse(strFromU8(exported["library.json"]))).toEqual(library); expect(manifest.media).toHaveLength(4);
   manifest.media.forEach((entry: { path: string; sha256: string }, i: number) => { expect(sha(exported[entry.path])).toBe(entry.sha256); expect(entry.sha256).toBe(sha(payloads[i])); });
-  const targetContext = await browser.newContext({ viewport: page.viewportSize()!, isMobile: info.project.name === "mobile", hasTouch: info.project.name === "mobile" });
+  const targetContext = await browser.newContext({ storageState: { cookies: [], origins: [{ origin: new URL(page.url()).origin, localStorage: [{ name: "idea-bank.language", value: "ru" }] }] }, viewport: page.viewportSize()!, isMobile: info.project.name === "mobile", hasTouch: info.project.name === "mobile" });
   try {
     const target = await targetContext.newPage(); await target.goto(new URL("/", page.url()).href); await openBackups(target); await inspect(target, bytes);
     await expect(target.getByText("Архив проверен. Текущая библиотека пока не изменена.", { exact: true })).toBeVisible();
@@ -176,6 +176,11 @@ test("Example is the only starter idea and reset requires explicit replacement",
   await page.getByRole("button", { name: "Заменить библиотеку", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0); await page.reload();
   await expect(page.locator(".project-card")).toHaveCount(1); await expect(page.locator(".project-card > strong")).toHaveText("Example");
-  expect(JSON.parse((await snapshot(page)).raw!)).toEqual(demoLibrary);
-  await expect.poll(async () => (await snapshot(page)).files.length).toBe(0);
+  const restored = JSON.parse((await snapshot(page)).raw!);
+  restored.projects[0].blocks[1].media.forEach((asset: MediaAsset, index: number) => {
+    expect(asset.id).not.toBe(demoLibrary.projects[0].blocks[1].media![index].id);
+    asset.id = demoLibrary.projects[0].blocks[1].media![index].id;
+  });
+  expect(restored).toEqual(demoLibrary);
+  await expect.poll(async () => (await snapshot(page)).files.length).toBe(2);
 });

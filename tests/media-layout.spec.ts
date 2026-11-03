@@ -1,5 +1,12 @@
+import { demoLibrary } from "../lib/ideas";
 import { expect, test } from "@playwright/test";
 import { STORAGE_KEY } from "../lib/ideas";
+
+test.beforeEach(async ({ page }) => {
+  const library = structuredClone(demoLibrary);
+  for (const idea of library.projects) for (const block of idea.blocks) delete block.media;
+  await page.addInitScript(library => { if (localStorage.getItem("idea-bank.library.v1") === null) localStorage.setItem("idea-bank.library.v1", JSON.stringify(library)); }, library);
+});
 
 function soundFixture() {
   const samples = 8000;
@@ -17,8 +24,8 @@ test("breadcrumbs navigate and wide windows add project columns", async ({ page,
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/#/project/example");
   const path = page.getByRole("navigation", { name: "Путь к идее" });
-  await path.getByRole("button", { name: "Примеры", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Примеры", exact: true })).toBeVisible();
+  await path.getByRole("button", { name: "Examples", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Examples", exact: true })).toBeVisible();
   await path.getByRole("button", { name: "Библиотека", exact: true }).click();
   await expect(page.locator(".project-card").filter({ hasText: "Example" })).toBeVisible();
   const columns = () => page.locator(".project-grid").evaluate(el => getComputedStyle(el).gridTemplateColumns.split(" ").length);
@@ -111,5 +118,7 @@ test("cancelling a media draft leaves the saved project unchanged", async ({ pag
   await expect(page.locator(".media-item")).toHaveCount(0);
   await page.reload();
   await expect(page.locator(".content-block")).toHaveCount(2);
-  expect(await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY)).toBeNull();
+  const expected = structuredClone(demoLibrary);
+  for (const idea of expected.projects) for (const block of idea.blocks) delete block.media;
+  expect(JSON.parse((await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY))!)).toEqual(expected);
 });

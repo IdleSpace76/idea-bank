@@ -1,10 +1,12 @@
 "use client";
+import { useI18n } from "./language-picker";
 
 import { useEffect, useRef, useState } from "react";
 import { Check, Palette } from "lucide-react";
 import { isTheme, THEME_KEY, themes, type Theme } from "@/lib/themes";
 
 export function ThemePicker() {
+  const { t } = useI18n();
   const [theme, setTheme] = useState<Theme>("sage");
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
@@ -31,10 +33,10 @@ export function ThemePicker() {
   return <div className="theme-picker" ref={root} onKeyDown={event => {
     if (event.key === "Escape" && open) { event.preventDefault(); event.stopPropagation(); setOpen(false); trigger.current?.focus(); }
   }}>
-    <button ref={trigger} type="button" className="theme-trigger" aria-label="Тема оформления" title="Тема оформления" aria-expanded={open} aria-controls={open ? "theme-choices" : undefined} onClick={() => setOpen(value => !value)}><Palette /><span>Тема</span></button>
-    {open && <div id="theme-choices" className="theme-choices" role="group" aria-label="Выбрать тему">
-      <p>Тема оформления</p>
-      {themes.map(item => <button type="button" key={item.id} aria-pressed={theme === item.id} onClick={() => choose(item.id)}><span className={`theme-swatch swatch-${item.id}`} aria-hidden="true" /><span>{item.name}</span>{theme === item.id && <Check aria-hidden="true" />}</button>)}
+    <button ref={trigger} type="button" className="theme-trigger" aria-label={t("Тема оформления")} title={t("Тема оформления")} aria-expanded={open} aria-controls={open ? "theme-choices" : undefined} onClick={() => setOpen(value => !value)}><Palette /><span>{t("Тема")}</span></button>
+    {open && <div id="theme-choices" className="theme-choices" role="group" aria-label={t("Выбрать тему")}>
+      <p>{t("Тема оформления")}</p>
+      {themes.map(item => <button type="button" key={item.id} aria-pressed={theme === item.id} onClick={() => choose(item.id)}><span className={`theme-swatch swatch-${item.id}`} aria-hidden="true" /><span>{t(item.name)}</span>{theme === item.id && <Check aria-hidden="true" />}</button>)}
     </div>}
   </div>;
 }

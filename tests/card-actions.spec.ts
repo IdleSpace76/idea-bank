@@ -11,7 +11,7 @@ test("idea card actions confirm deletion and the trailing add card works on home
   expect(new URL(page.url()).hash).not.toContain("project");
   await page.getByRole("button", { name: "Отмена", exact: true }).click();
   await page.goto("/#/section/examples");
-  await expect(page.getByRole("heading", { name: "Примеры", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Examples", exact: true })).toBeVisible();
   const sectionAction = await page.getByRole("button", { name: "Идея", exact: true }).boundingBox();
   expect(sectionAction!.x).toBeCloseTo(homeAction!.x, 0);
   expect(sectionAction!.y).toBeCloseTo(homeAction!.y, 0);

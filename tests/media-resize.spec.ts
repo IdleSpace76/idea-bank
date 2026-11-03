@@ -1,7 +1,14 @@
+import { demoLibrary } from "../lib/ideas";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { STORAGE_KEY } from "../lib/ideas";
 
 const image = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a9sAAAAASUVORK5CYII=", "base64");
+test.beforeEach(async ({ page }) => {
+  const library = structuredClone(demoLibrary);
+  for (const idea of library.projects) for (const block of idea.blocks) delete block.media;
+  await page.addInitScript(library => { if (localStorage.getItem("idea-bank.library.v1") === null) localStorage.setItem("idea-bank.library.v1", JSON.stringify(library)); }, library);
+});
+
 function wav() {
   const data = Buffer.alloc(204);
   data.write("RIFF"); data.writeUInt32LE(196, 4); data.write("WAVEfmt ", 8); data.writeUInt32LE(16, 16); data.writeUInt16LE(1, 20); data.writeUInt16LE(1, 22); data.writeUInt32LE(8000, 24); data.writeUInt32LE(16000, 28); data.writeUInt16LE(2, 32); data.writeUInt16LE(16, 34); data.write("data", 36); data.writeUInt32LE(160, 40); return data;
@@ -82,5 +89,7 @@ test("media resize supports keyboard, drag cancellation and automatic reset", as
   await page.getByRole("button", { name: "Отмена", exact: true }).click();
   await page.reload();
   await expect(page.locator(".media-item")).toHaveCount(0);
-  expect(await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY)).toBeNull();
+  const expected = structuredClone(demoLibrary);
+  for (const idea of expected.projects) for (const block of idea.blocks) delete block.media;
+  expect(JSON.parse((await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY))!)).toEqual(expected);
 });

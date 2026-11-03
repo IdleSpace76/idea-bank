@@ -12,11 +12,13 @@ import ts from "typescript";
 
 const directory = new URL("../.cache/cloud-sync-check/", import.meta.url);
 await mkdir(directory, { recursive: true });
-for (const name of ["rich-text", "ideas"]) {
+for (const name of ["example-media", "rich-text", "ideas"]) {
   const source = await readFile(new URL(`../lib/${name}.ts`, import.meta.url), "utf8");
   await writeFile(new URL(`${name}.js`, directory), ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText);
 }
 const require = createRequire(import.meta.url), { demoLibrary } = require(fileURLToPath(new URL("ideas.js", directory)));
+// Storage fixtures supply their own attachment bytes.
+for (const idea of demoLibrary.projects) for (const block of idea.blocks) delete block.media;
 const stateKey = "idea-bank.cloud.v1", libraryKey = "idea-bank.library.v1";
 const pixel = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a9sAAAAASUVORK5CYII=", "base64");
 const glb = await readFile(new URL("../test-models/blue-cube.glb", import.meta.url));
@@ -41,7 +43,8 @@ try {
       snapshots.set(snapshot.revision, snapshot); heads = [snapshot.revision]; return snapshot;
     }
     async function device() {
-      const context = await browser.newContext({ viewport }); contexts.push(context);
+      const context = await browser.newContext({ viewport });
+      await context.addInitScript(() => localStorage.setItem("idea-bank.language", "ru")); contexts.push(context);
       await context.addCookies([{ name: cookieName, value: token, url: origin, httpOnly: true, sameSite: "Lax" }]);
       await context.route("**/api/storage/**", async route => {
         if (offline) { await route.abort("failed"); return; }

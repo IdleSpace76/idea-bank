@@ -1,4 +1,5 @@
 "use client";
+import { useI18n } from "./language-picker";
 
 import { useEffect, useRef, useState } from "react";
 import { Box, LoaderCircle, RotateCcw } from "lucide-react";
@@ -6,6 +7,7 @@ import type { Object3D, Material, Texture, Mesh } from "three";
 
 /** A lazy, local-only 3D viewport; owns and releases its GPU resources. */
 export default function ModelPreview({ source, name }: { source: string; name: string }) {
+  const { t } = useI18n();
   const host = useRef<HTMLDivElement>(null);
   const reset = useRef<() => void>(() => {});
   const [active, setActive] = useState(false);
@@ -37,7 +39,7 @@ export default function ModelPreview({ source, name }: { source: string; name: s
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
       renderer.outputColorSpace = THREE.SRGBColorSpace;
-      renderer.domElement.setAttribute("role", "img"); renderer.domElement.setAttribute("aria-label", `3D-модель ${name}`);
+      renderer.domElement.setAttribute("role", "img"); renderer.domElement.setAttribute("aria-label", t("3D-модель {0}", { 0: name }));
       renderer.domElement.tabIndex = 0;
       element.prepend(renderer.domElement);
       const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(40, 1, .01, 100);
@@ -64,7 +66,7 @@ export default function ModelPreview({ source, name }: { source: string; name: s
         camera.aspect = width / height; camera.updateProjectionMatrix(); renderer.setSize(width, height, false); render();
       });
       observer.observe(element);
-      const contextLost = (event: Event) => { event.preventDefault(); if (!disposed) { setStatus("error"); setError("3D-просмотр остановлен браузером. Обнови страницу или скачай модель."); } };
+      const contextLost = (event: Event) => { event.preventDefault(); if (!disposed) { setStatus("error"); setError(t("3D-просмотр остановлен браузером. Обнови страницу или скачай модель.")); } };
       renderer.domElement.addEventListener("webglcontextlost", contextLost);
       let cleaned = false;
       cleanup = () => {
@@ -77,15 +79,15 @@ export default function ModelPreview({ source, name }: { source: string; name: s
       const manager = new THREE.LoadingManager();
       manager.setURLModifier(url => {
         if (url === source || url.startsWith(`blob:${location.origin}/`) || /^data:(?:image\/|application\/octet-stream|application\/gltf-buffer)/i.test(url)) return url;
-        throw new Error("В модели есть внешние ресурсы. Загрузи glTF вместе с файлами или экспортируй GLB.");
+        throw new Error(t("В модели есть внешние ресурсы. Загрузи glTF вместе с файлами или экспортируй GLB."));
       });
       const gltf = await new GLTFLoader(manager).loadAsync(source);
       if (disposed) { release(gltf.scene); return; }
       object = gltf.scene;
       const box = new THREE.Box3().setFromObject(object);
-      if (box.isEmpty()) throw new Error("В модели нет объектов для отображения.");
+      if (box.isEmpty()) throw new Error(t("В модели нет объектов для отображения."));
       const center = box.getCenter(new THREE.Vector3()), radius = box.getBoundingSphere(new THREE.Sphere()).radius;
-      if (!Number.isFinite(radius) || radius <= 0) throw new Error("Не удалось определить размеры модели.");
+      if (!Number.isFinite(radius) || radius <= 0) throw new Error(t("Не удалось определить размеры модели."));
       object.position.sub(center);
       const group = new THREE.Group(); group.add(object); group.scale.setScalar(1 / radius); scene.add(group);
       camera.aspect = element.clientWidth / Math.max(1, element.clientHeight); camera.updateProjectionMatrix();
@@ -96,12 +98,12 @@ export default function ModelPreview({ source, name }: { source: string; name: s
       if (disposed) return;
       cleanup(); setStatus("error");
       const detail = reason instanceof Error ? reason.message : "";
-      setError(/внешние ресурсы|нет объектов|размеры модели/.test(detail) ? detail : /WebGL/i.test(detail) ? "Для 3D-просмотра нужен WebGL. Проверь настройки браузера; модель можно скачать." : "Не удалось показать модель. Нужен корректный GLB/glTF 2.0 без Draco/KTX2-сжатия. Оригинал можно скачать.");
+      setError([t("В модели есть внешние ресурсы. Загрузи glTF вместе с файлами или экспортируй GLB."), t("В модели нет объектов для отображения."), t("Не удалось определить размеры модели.")].includes(detail) ? detail : /WebGL/i.test(detail) ? t("Для 3D-просмотра нужен WebGL. Проверь настройки браузера; модель можно скачать.") : t("Не удалось показать модель. Нужен корректный GLB/glTF 2.0 без Draco/KTX2-сжатия. Оригинал можно скачать."));
     });
     return () => { disposed = true; cleanup(); };
   }, [source, name, active]);
-  return <div ref={host} className="model-preview" data-state={status} aria-busy={active && status === "loading"}>
-    {status !== "ready" && <div className="model-status" role={status === "error" ? "alert" : "status"}>{status === "error" ? <Box /> : <LoaderCircle />}<span>{error || "Загружаем 3D-модель…"}</span></div>}
-    {status === "ready" && <button type="button" className="icon-button model-reset" title="Вернуть исходный ракурс" aria-label={`Сбросить ракурс ${name}`} onClick={() => reset.current()}><RotateCcw /></button>}
+  return <div ref={host} className="model-preview" data-state={t(status)} aria-busy={active && status === "loading"}>
+    {status !== "ready" && <div className="model-status" role={status === "error" ? "alert" : "status"}>{status === "error" ? <Box /> : <LoaderCircle />}<span>{error || t("Загружаем 3D-модель…")}</span></div>}
+    {status === "ready" && <button type="button" className="icon-button model-reset" title={t("Вернуть исходный ракурс")} aria-label={t("Сбросить ракурс {0}", { 0: name })} onClick={() => reset.current()}><RotateCcw /></button>}
   </div>;
 }

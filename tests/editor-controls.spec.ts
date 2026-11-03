@@ -25,19 +25,22 @@ test("editor has one add action and a single compact save/cancel pair", async ({
 
 test("dragging a block changes its order and persists it", async ({ page, isMobile }) => {
   test.skip(isMobile, "Mouse drag is for desktop; arrow buttons remain available on touch screens.");
+  const library = structuredClone(demoLibrary);
+  for (const idea of library.projects) for (const block of idea.blocks) delete block.media;
+  await page.addInitScript(({ key, library }) => { if (localStorage.getItem(key) === null) localStorage.setItem(key, JSON.stringify(library)); }, { key: STORAGE_KEY, library });
   await page.goto("/#/project/example");
   await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
   await page.getByRole("button", { name: "Перетащить блок 1", exact: true }).dragTo(page.locator(".editor-block").nth(1));
-  await expect(page.getByLabel("Заголовок блока").first()).toHaveValue("Медиа и расположение");
+  await expect(page.getByLabel("Заголовок блока").first()).toHaveValue("Media and layout");
   await page.getByRole("button", { name: "Сохранить идею", exact: true }).last().click();
   await page.reload();
-  await expect(page.locator(".content-block h2").first()).toHaveText("Медиа и расположение");
+  await expect(page.locator(".content-block h2").first()).toHaveText("Media and layout");
 });
 
 test("section actions open beside the trigger and close on Escape/outside click", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".section-grid .new-section-card")).toBeVisible();
-  const trigger = page.getByRole("button", { name: "Действия с разделом Примеры", exact: true });
+  const trigger = page.getByRole("button", { name: "Действия с разделом Examples", exact: true });
   await trigger.click();
   await expect(page.getByRole("menu")).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -50,7 +53,7 @@ test("section actions open beside the trigger and close on Escape/outside click"
   await trigger.click();
   await page.getByRole("menuitem", { name: "Изменить раздел", exact: true }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
-  await expect(page.getByLabel("Название", { exact: true })).toHaveValue("Примеры");
+  await expect(page.getByLabel("Название", { exact: true })).toHaveValue("Examples");
 });
 
 test("a custom cover survives on project cards while project pages omit cover controls", async ({ page }) => {
@@ -73,7 +76,7 @@ test("a custom cover survives on project cards while project pages omit cover co
   await page.getByRole("button", { name: "Действия с идеей", exact: true }).click();
   await expect(page.getByRole("menuitem", { name: "Название и обложка", exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Примеры", exact: true }).last().click();
+  await page.getByRole("button", { name: "Examples", exact: true }).last().click();
   await page.reload();
   const card = page.locator(".project-card").filter({ hasText: "Идея со своей обложкой" });
   await expect.poll(() => card.locator("img").evaluate((el: HTMLImageElement) => el.naturalWidth)).toBe(320);

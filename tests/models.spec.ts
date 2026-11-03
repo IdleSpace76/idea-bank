@@ -1,6 +1,13 @@
+import { demoLibrary } from "../lib/ideas";
 import { expect, test } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+
+test.beforeEach(async ({ page }) => {
+  const library = structuredClone(demoLibrary);
+  for (const idea of library.projects) for (const block of idea.blocks) delete block.media;
+  await page.addInitScript(library => { if (localStorage.getItem("idea-bank.library.v1") === null) localStorage.setItem("idea-bank.library.v1", JSON.stringify(library)); }, library);
+});
 
 function fixture() {
   const binary = Buffer.alloc(60);

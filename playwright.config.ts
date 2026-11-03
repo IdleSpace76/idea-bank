@@ -10,6 +10,8 @@ export default defineConfig({
     channel: "msedge",
     headless: true,
     trace: "retain-on-failure",
+    // Existing regression scenarios exercise Russian. Localization tests override this.
+    storageState: { cookies: [], origins: [{ origin: new URL(baseURL).origin, localStorage: [{ name: "idea-bank.language", value: "ru" }] }] },
   },
   projects: [
     { name: "desktop", use: { viewport: { width: 1440, height: 1000 } } },

@@ -48,8 +48,8 @@ async function withServer(mode, run) {
 
 await withServer("github", async origin => {
   const anonymous = await (await fetch(origin)).text();
-  assert.ok(anonymous.includes("Войти через GitHub"));
-  assert.ok(!anonymous.includes("Открываем библиотеку"), "Anonymous response does not include the library");
+  assert.ok(anonymous.includes("Sign in with GitHub"));
+  assert.ok(!anonymous.includes("Opening your library"), "Anonymous response does not include the library");
   const cookieName = "authjs.session-token";
   async function sessionCookie(sub) {
     return `${cookieName}=${await encode({ secret, salt: cookieName, token: { sub, name: "Owner fixture" }, maxAge: 60 })}`;
@@ -72,11 +72,11 @@ await withServer("github", async origin => {
   assert.equal((await fetch(`${origin}/api/storage/library?revision=bad`, { headers: { Cookie: ownerCookie } })).status, 400);
   assert.equal((await fetch(`${origin}/api/storage/media/download`, { headers: { Cookie: ownerCookie } })).status, 400);
   const owner = await (await fetch(origin, { headers: { Cookie: ownerCookie } })).text();
-  assert.ok(owner.includes("Выйти") && owner.includes("Открываем библиотеку"), "Owner sees library and logout");
+  assert.ok(owner.includes("Sign out") && owner.includes("Opening your library"), "Owner sees library and logout");
   const other = await (await fetch(origin, { headers: { Cookie: await sessionCookie("67890") } })).text();
-  assert.ok(other.includes("Войти через GitHub") && !other.includes("Открываем библиотеку"), "Different owner is denied");
+  assert.ok(other.includes("Sign in with GitHub") && !other.includes("Opening your library"), "Different owner is denied");
   const tampered = await (await fetch(origin, { headers: { Cookie: `${ownerCookie}tampered` } })).text();
-  assert.ok(tampered.includes("Войти через GitHub"), "Tampered session is denied");
+  assert.ok(tampered.includes("Sign in with GitHub"), "Tampered session is denied");
   const csrfResponse = await fetch(`${origin}/api/auth/csrf`);
   const { csrfToken } = await csrfResponse.json();
   const cookies = csrfResponse.headers.getSetCookie().map(cookie => cookie.split(";")[0]).join("; ");
@@ -94,16 +94,23 @@ await withServer("github", async origin => {
   assert.ok(signOut.headers.getSetCookie().some(cookie => cookie.startsWith(`${cookieName}=;`) && cookie.includes("Max-Age=0")), "Logout expires session cookie");
   const browser = await chromium.launch({ channel: "msedge", headless: true });
   try {
-    for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }, { width: 320, height: 844 }]) {
       const context = await browser.newContext({ viewport });
       const page = await context.newPage();
       await page.goto(origin);
-      await page.getByRole("button", { name: "Войти через GitHub" }).waitFor();
+      await page.getByRole("button", { name: "Sign in with GitHub" }).waitFor();
+      await page.locator(".language-trigger").click();
+      await page.getByRole("menuitemradio", { name: "RU · Русский", exact: true }).click();
+      await page.getByRole("button", { name: "Войти через GitHub", exact: true }).waitFor();
+      await page.locator(".language-trigger").click();
+      await page.getByRole("menuitemradio", { name: "EN · English", exact: true }).click();
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "Login fits viewport");
       await context.addCookies([{ name: cookieName, value: ownerCookie.slice(cookieName.length + 1), url: origin, httpOnly: true, sameSite: "Lax" }]);
       await page.reload();
-      await page.getByRole("button", { name: "Выйти", exact: true }).click();
-      await page.getByRole("button", { name: "Войти через GitHub" }).waitFor();
+      await page.getByRole("button", { name: "Sign out", exact: true }).waitFor();
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Owner header with language switch fits ${viewport.width}px viewport`);
+      await page.getByRole("button", { name: "Sign out", exact: true }).click();
+      await page.getByRole("button", { name: "Sign in with GitHub" }).waitFor();
       assert.ok(!(await context.cookies()).some(cookie => cookie.name === cookieName), "Browser server action clears owner session");
       await context.close();
     }
@@ -112,13 +119,13 @@ await withServer("github", async origin => {
 
 await withServer("invalid-mode", async origin => {
   const page = await (await fetch(origin)).text();
-  assert.ok(page.includes("Вход не настроен") && !page.includes("Открываем библиотеку"));
+  assert.ok(page.includes("Sign-in is not configured") && !page.includes("Opening your library"));
   assert.equal((await fetch(`${origin}/api/auth/session`)).status, 503);
 });
 
 await withServer("local", async origin => {
   const page = await (await fetch(origin)).text();
-  assert.ok(page.includes("Открываем библиотеку") && !page.includes("Войти через GitHub"));
+  assert.ok(page.includes("Opening your library") && !page.includes("Sign in with GitHub"));
   assert.equal((await fetch(`${origin}/api/auth/session`)).status, 404);
 });
 console.log("Auth checks passed: configuration, owner gate, PKCE/state, session tampering, logout and local mode. OAuth exchange with GitHub needs real App credentials.");

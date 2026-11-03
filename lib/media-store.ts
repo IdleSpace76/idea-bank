@@ -1,3 +1,4 @@
+import { translate as t } from "./i18n";
 import type { MediaAsset, MediaKind, Project } from "./ideas";
 
 const DB_NAME = "idea-bank.media.v1";
@@ -8,8 +9,8 @@ function openMediaDatabase(): Promise<IDBDatabase> {
     const request = indexedDB.open(DB_NAME, 1);
     request.onupgradeneeded = () => request.result.createObjectStore(STORE);
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error("Медиахранилище недоступно"));
-    request.onblocked = () => reject(new Error("Закрой другие вкладки приложения и повтори сохранение."));
+    request.onerror = () => reject(request.error || new Error(t("Медиахранилище недоступно")));
+    request.onblocked = () => reject(new Error(t("Закрой другие вкладки приложения и повтори сохранение.")));
   });
 }
 
@@ -21,7 +22,7 @@ export async function saveMediaFiles(files: ReadonlyMap<string, Blob>): Promise<
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE, "readwrite");
       tx.oncomplete = () => resolve();
-      tx.onerror = tx.onabort = () => reject(tx.error || new Error("Не удалось сохранить медиа"));
+      tx.onerror = tx.onabort = () => reject(tx.error || new Error(t("Не удалось сохранить медиа")));
       files.forEach((file, id) => tx.objectStore(STORE).put(file, id));
     });
   } finally { db.close(); }
@@ -51,7 +52,7 @@ export async function readMediaFiles(ids: string[]): Promise<Map<string, Blob>> 
         request.onsuccess = () => { if (request.result instanceof Blob) files.set(id, request.result); };
       }
       tx.oncomplete = () => resolve(files);
-      tx.onerror = tx.onabort = () => reject(tx.error || new Error("Не удалось прочитать медиа для экспорта."));
+      tx.onerror = tx.onabort = () => reject(tx.error || new Error(t("Не удалось прочитать медиа для экспорта.")));
     });
   } finally { db.close(); }
 }
@@ -64,7 +65,7 @@ export async function removeMediaFiles(ids: string[]): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE, "readwrite");
       tx.oncomplete = () => resolve();
-      tx.onerror = tx.onabort = () => reject(tx.error || new Error("Не удалось удалить медиа"));
+      tx.onerror = tx.onabort = () => reject(tx.error || new Error(t("Не удалось удалить медиа")));
       ids.forEach(id => tx.objectStore(STORE).delete(id));
     });
   } finally { db.close(); }

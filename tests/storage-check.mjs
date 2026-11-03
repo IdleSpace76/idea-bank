@@ -8,7 +8,7 @@ import { chromium } from "@playwright/test";
 // Compile the actual server modules for Node without adding production test bypasses.
 const directory = new URL("../.cache/storage-check/", import.meta.url);
 await mkdir(directory, { recursive: true });
-for (const name of ["rich-text", "ideas", "cloud-library", "b2-storage"]) {
+for (const name of ["example-media", "rich-text", "ideas", "cloud-library", "b2-storage"]) {
   const source = await readFile(new URL(`../lib/${name}.ts`, import.meta.url), "utf8");
   await writeFile(new URL(`${name}.js`, directory), ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText);
 }
@@ -16,6 +16,8 @@ const require = createRequire(import.meta.url);
 const { B2Storage, readB2Settings } = require(new URL("b2-storage.js", directory).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
 const { StorageError, parseCloudSave, parseCloudMedia } = require(new URL("cloud-library.js", directory).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
 const { demoLibrary } = require(new URL("ideas.js", directory).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
+// Storage fixtures supply their own attachment bytes.
+for (const idea of demoLibrary.projects) for (const block of idea.blocks) delete block.media;
 const { ListObjectVersionsCommand, DeleteObjectCommand } = await import("@aws-sdk/client-s3");
 const { loadEnvConfig } = require("@next/env");
 
