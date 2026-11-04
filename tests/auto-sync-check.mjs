@@ -12,7 +12,7 @@ import { memoryStorage } from "./entity-fixture.mjs";
 
 const directory=new URL("../.cache/entity-browser/",import.meta.url);await mkdir(directory,{recursive:true});
 await writeFile(new URL("local-fixture.mjs",directory),ts.transpileModule(await readFile(new URL("./local-fixture.ts",import.meta.url),"utf8"),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText);
-const { readStoredLibrary,setStoredLibrary }=await import(new URL("local-fixture.mjs",directory));
+const { readStoredLibrary,setStoredLibrary,deleteLocalDatabase }=await import(new URL("local-fixture.mjs",directory));
 const probe=createServer();await new Promise(r=>probe.listen(0,"127.0.0.1",r));const port=probe.address().port;await new Promise(r=>probe.close(r));
 const origin=`http://127.0.0.1:${port}`,secret="isolated-entity-sync-fixture-at-least-32-characters";
 const server=spawn(process.execPath,["node_modules/next/dist/bin/next","start","--hostname","127.0.0.1","--port",String(port)],{windowsHide:true,stdio:["ignore","pipe","pipe"],env:{...process.env,IDEA_BANK_AUTH_MODE:"github",AUTH_URL:origin,AUTH_SECRET:secret,AUTH_GITHUB_ID:"fixture",AUTH_GITHUB_SECRET:"fixture",IDEA_BANK_OWNER_ID:"12345",B2_S3_ENDPOINT:"https://s3.eu-central-003.backblazeb2.com",B2_REGION:"eu-central-003",B2_BUCKET_NAME:"fixture-bucket",B2_KEY_ID:"fixture",B2_APPLICATION_KEY:"fixture",ABLY_API_KEY:""}});
@@ -28,9 +28,9 @@ try {
   let eventSerial=0;
   const broadcast=revision=>{for(const socket of sockets)if(socket.attached)socket.ws.send(JSON.stringify({action:15,channel:eventChannel,messages:[{name:"library-changed",data:{version:1,revision},id:`fixture:${eventSerial++}:0`,timestamp:Date.now()}]}));};
   const seed={version:1,sections:[{id:"section",name:"Test",description:"",icon:"folder"}],projects:[{id:"idea",sectionId:"section",name:"Auto idea",description:"Base",cover:"forest",updatedAt:"2026-11-01T00:00:00Z",blocks:[{id:"block",heading:"Block",text:"Base text"}]}]};
-  async function device(viewport={width:1440,height:1000},events=false,startOffline=false) {
+  async function device(viewport={width:1440,height:1000},events=false,startOffline=false,pristine=false) {
     const context=await browser.newContext({viewport});contexts.push(context);
-    await context.addInitScript(seed=>{localStorage.setItem("idea-bank.language","ru");localStorage.setItem("idea-bank.library.v1",JSON.stringify(seed));},seed);
+    await context.addInitScript(({seed,pristine})=>{localStorage.setItem("idea-bank.language","ru");if(!pristine)localStorage.setItem("idea-bank.library.v1",JSON.stringify(seed));},{seed,pristine});
     if(startOffline)await context.addInitScript(()=>Object.defineProperty(navigator,"onLine",{configurable:true,get:()=>false}));
     await context.addCookies([{name:cookie,value:token,url:origin,httpOnly:true,sameSite:"Lax"}]);
     const state={offline:false,unauth:false,hold:null,entered:null,calls:0,active:0,maxActive:0,eventTokens:0,sockets:[],eventsUnavailable:false};
@@ -80,6 +80,10 @@ try {
   const initiallyOffline=await device({width:390,height:844},false,true);await phase(initiallyOffline,"offline");assert.equal(states.get(initiallyOffline).calls,0);assert.equal(states.get(initiallyOffline).eventTokens,0);
   await initiallyOffline.evaluate(()=>{Object.defineProperty(navigator,"onLine",{configurable:true,get:()=>true});window.dispatchEvent(new Event("online"));});await phase(initiallyOffline,"review");await initiallyOffline.context().close();
   const a=await device();await phase(a,"review");await open(a);await a.getByRole("button",{name:"Сохранить локальную в облаке",exact:true}).click();await phase(a,"synced");await close(a);
+  const beforePristine=batches.length,clean=await device({width:390,height:844},false,false,true);await phase(clean,"synced");
+  assert.equal(batches.length,beforePristine,"A new phone only downloads the existing cloud library");await expect(clean.getByRole("dialog")).toHaveCount(0);
+  await clean.evaluate(deleteLocalDatabase);await clean.evaluate(()=>localStorage.clear());await clean.reload();await phase(clean,"synced");
+  assert.equal(await readDescription(clean),"Base");assert.equal(batches.length,beforePristine,"Clearing local site data does not upload a new Example");await clean.context().close();
   const b=await device({width:390,height:844});await phase(b,"review");await open(b);b.once("dialog",d=>d.accept());await b.getByRole("button",{name:"Загрузить облачную на устройство",exact:true}).click();await phase(b,"synced");await close(b);
   // Save through the real metadata form. Sync continues with its dialog closed.
   await a.goto(origin+"/#/project/idea");await a.getByRole("button",{name:"Изменить",exact:true}).click();

@@ -34,6 +34,19 @@ export const readLocalRaw = async () => { const state = await readLocalSnapshot(
 export const readMeta = <T,>(key: string) => transaction(["meta"], "readonly", tx => request<T | undefined>(tx.objectStore("meta").get(key)));
 export const readOutbox = () => transaction(["outbox"], "readonly", tx => request<PendingChange[]>(tx.objectStore("outbox").getAll()));
 
+/** Only an untouched generated seed may be replaced automatically on first cloud connection. */
+export function isPristineStarter(expected: Library): Promise<boolean> {
+  return transaction(["meta", "sections", "ideas", "blocks"], "readonly", async tx => {
+    const snapshot = await snapshotIn(tx);
+    if (!snapshot || !same(snapshot.library, expected)) return false;
+    const starter = await request<{ version: number; revision: number } | undefined>(tx.objectStore("meta").get("starter"));
+    if (starter?.version === 1 && starter.revision === snapshot.revision) return true;
+    // Older releases already recorded seed provenance. Revision 1 proves no later save occurred.
+    const migration = await request<{ version: number; legacy: boolean } | undefined>(tx.objectStore("meta").get("migration"));
+    return !starter && migration?.version === 1 && migration.legacy === false && snapshot.revision === 1;
+  });
+}
+
 function entities(library: Library) {
   const values = new Map<string, PendingChange>();
   for (const section of library.sections) values.set(`section:${section.id}`, { entity: "section", id: section.id, operation: "put", sequence: 0, base: null, value: section });
@@ -100,6 +113,7 @@ export async function saveLocalLibrary(library: Library, expected: Library | nul
       if(!used.has(from))tx.objectStore("media").delete(from);
     }
     const revision = await writeIn(tx, checked, previous, !options.remote);
+    tx.objectStore("meta").delete("starter");
     if (options.remote) tx.objectStore("outbox").clear();
     if (options.cloud !== undefined) tx.objectStore("meta").put(options.cloud, "cloud");
     if (options.checkpoint !== undefined) tx.objectStore("meta").put(options.checkpoint, "sync-v2");
@@ -172,7 +186,8 @@ export async function initializeLocalLibrary(seed: () => Promise<{ library: Libr
       const saved = await request<Blob | undefined>(tx.objectStore("media").get(id));
       if (!(saved instanceof Blob) || saved.size !== original.size || saved.type !== original.type) throw new Error("Media migration verification failed");
     }
-    await writeIn(tx, source.library, null, !alreadySynced);
+    const revision = await writeIn(tx, source.library, null, !alreadySynced);
+    if (raw === null) tx.objectStore("meta").put({ version: 1, revision }, "starter");
     if (cloud) tx.objectStore("meta").put(cloud, "cloud");
     tx.objectStore("meta").put({ version: 1, legacy: raw !== null }, "migration");
     const verified = await snapshotIn(tx);

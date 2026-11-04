@@ -63,6 +63,13 @@ try {
     const check=async page=>{await page.getByRole("button",{name:/^(Синхронизировать|Проверить ещё раз)$/}).click();await expect(page.locator(".cloud-sync-controls .primary-button").first()).toBeEnabled({timeout:15000});};
     const success=page=>expect(page.locator(".cloud-sync-controls .backup-status")).toHaveText("Изменения идей синхронизированы.",{timeout:15000});
     const change=async(page,edit)=>{const library=await page.evaluate(readStoredLibrary);edit(library);await setStoredLibrary(page,library);await page.reload();await expect(page.locator(".project-card")).toHaveCount(library.projects.length);};
+    // A fresh installation seeds only a truly empty cloud and respects deliberate cloud deletions.
+    const initial=memoryStorage(),starterDevice=await device(initial);await open(starterDevice);await check(starterDevice);await success(starterDevice);
+    assert.equal((await starterDevice.evaluate(readStoredLibrary)).projects[0].name,"Example");await starterDevice.context().close();
+    const seeded=await initial.entities().read();await initial.entities().save({operationId:randomUUID(),heads:seeded.heads,changes:Object.keys(seeded.index).map(key=>({key,base:seeded.index[key],value:null}))});
+    const beforeEmpty=batches.length,emptyDevice=await device(initial);await open(emptyDevice);await check(emptyDevice);await success(emptyDevice);
+    assert.equal((await emptyDevice.evaluate(readStoredLibrary)).projects.length,0);assert.equal(batches.length,beforeEmpty,"An intentionally empty cloud is not seeded again");await emptyDevice.context().close();initial.storage.client.destroy();
+    batches.length=0;reads.length=0;downloads.length=0;
     const a=await device(),own=await a.evaluate(readStoredLibrary);
     own.projects[0].name="Personal idea";own.projects[0].blocks[0].text="Base one";delete own.projects[0].blocks[0].richText;own.projects[0].blocks[1].text="Base two";
     const pixel=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a9sAAAAASUVORK5CYII=","base64"),pixelId=randomUUID();
@@ -73,7 +80,10 @@ try {
     await a.evaluate(async({id,bytes})=>{const db=await new Promise(r=>{const q=indexedDB.open("idea-bank.local",1);q.onsuccess=()=>r(q.result);});await new Promise(r=>{const tx=db.transaction("media","readwrite");tx.objectStore("media").put(new Blob([new Uint8Array(bytes)],{type:"image/png"}),id);tx.oncomplete=r;});db.close();},{id:hiddenId,bytes:[...hiddenPixel]});
     await setStoredLibrary(a,own);await a.reload();await expect(a.locator(".project-card > strong")).toHaveText("Personal idea");await open(a);await check(a);
     assert.equal(batches.length,0,"First transfer waits for owner choice");await a.getByRole("button",{name:"Сохранить локальную в облаке",exact:true}).click();await success(a);
-    const b=await device();await open(b);await check(b);b.once("dialog",d=>d.accept());await b.getByRole("button",{name:"Загрузить облачную на устройство",exact:true}).click();await success(b);
+    const beforeBootstrap=batches.length;
+    const b=await device();await open(b);await check(b);await success(b);
+    assert.equal(batches.length,beforeBootstrap,"A pristine device downloads cloud data without publishing Example");
+    await expect(b.getByRole("button",{name:"Загрузить облачную на устройство",exact:true})).toHaveCount(0);
     const received=await b.evaluate(readStoredLibrary);assert.equal(received.projects[0].name,"Personal idea");assert.equal(received.projects[0].coverImage.id,`${hash(pixel)}-${hash(pixel,"md5")}`);
     const before=fixture.objects.size;await check(b);await success(b);assert.equal(fixture.objects.size,before,"A no-op sync does not create snapshots");assert.equal(reads.at(-1),0,"A no-op sync sends no record contents");
     const hiddenContent=`${hash(hiddenPixel)}-${hash(hiddenPixel,"md5")}`;
@@ -117,7 +127,7 @@ try {
     await close(a);await change(a,l=>l.projects.find(p=>p.id==="idea-a").description="Offline edit");await open(a);offline=true;await check(a);await expect(a.locator(".backup-error").first()).toBeVisible();offline=false;
     assert.equal((await a.evaluate(readStoredLibrary)).projects.find(p=>p.id==="idea-a").description,"Offline edit");await check(a);await success(a);
     // Valid metadata sync completes even when an on-demand preview is corrupt.
-    const c=await device();await open(c);await check(c);corrupt=true;c.once("dialog",d=>d.accept());await c.getByRole("button",{name:"Загрузить облачную на устройство",exact:true}).click();await success(c);
+    const c=await device();corrupt=true;await open(c);await check(c);await success(c);
     assert.equal((await c.evaluate(readStoredLibrary)).projects.find(p=>p.id==="example").name,"Personal idea");
     await close(c);await c.goto(origin+"/#/project/example");await expect(c.locator(".media-error").first()).toBeVisible({timeout:15000});
     corrupt=false;await c.getByRole("button",{name:"Повторить загрузку",exact:true}).first().click();await expect(c.locator(".image-preview img").first()).toBeVisible({timeout:15000});
@@ -145,7 +155,7 @@ try {
     const legacy=memoryStorage(),legacyLibrary={...structuredClone(own),projects:[{...structuredClone(own.projects[0]),name:"Legacy idea",coverImage:undefined,blocks:[{id:"legacy-block",heading:"Legacy",text:"Old data"}]}]};
     await legacy.storage.saveLibrary({baseRevisions:[],library:legacyLibrary,media:[]});
     const d=await device(legacy);await open(d);await check(d);await expect(d.getByRole("button",{name:"Перейти на новую синхронизацию",exact:true})).toBeVisible();assert.equal([...legacy.objects.keys()].filter(k=>k.includes("/indexes/")).length,0);
-    await d.getByRole("button",{name:"Перейти на новую синхронизацию",exact:true}).click();await expect(d.getByRole("button",{name:"Загрузить облачную на устройство",exact:true})).toBeVisible();d.once("dialog",dialog=>dialog.accept());await d.getByRole("button",{name:"Загрузить облачную на устройство",exact:true}).click();await success(d);
+    await d.getByRole("button",{name:"Перейти на новую синхронизацию",exact:true}).click();await success(d);
     assert.equal((await d.evaluate(readStoredLibrary)).projects[0].name,"Legacy idea");legacy.storage.client.destroy();
     // An explicitly confirmed reset propagates deletions without clearing sync history/checkpoints.
     await close(a);await open(a);await check(a);await success(a);
@@ -158,6 +168,10 @@ try {
     assert.deepEqual((await b.evaluate(readStoredLibrary)).projects.map(idea=>idea.name),["Example"]);
     assert.deepEqual((await a.evaluate(readStoredLibrary)).sections,(await b.evaluate(readStoredLibrary)).sections);
     await check(b);await success(b);assert.equal((await b.evaluate(readStoredLibrary)).projects.length,1,"Reset ideas are not resurrected by a later check");
+    const editedStarter=await device();const personalExample=await editedStarter.evaluate(readStoredLibrary);personalExample.projects[0].blocks[0].text="My unsent Example edit";delete personalExample.projects[0].blocks[0].richText;
+    await setStoredLibrary(editedStarter,personalExample);const beforePersonal=batches.length;await open(editedStarter);await check(editedStarter);
+    await expect(editedStarter.getByRole("button",{name:"Загрузить облачную на устройство",exact:true})).toBeVisible();
+    assert.equal(batches.length,beforePersonal);assert.equal((await editedStarter.evaluate(readStoredLibrary)).projects[0].blocks[0].text,"My unsent Example edit");
     await b.screenshot({path:new URL(`sync-${viewport.width}.png`,directory).pathname.replace(/^\/([A-Za-z]:)/,"$1")});
     for(const page of [a,b,c])assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
     for(const context of contexts)await context.close();fixture.storage.client.destroy();

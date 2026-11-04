@@ -4,6 +4,22 @@ import { deleteLocalDatabase, exposeLibraryStore, readStoredLibrary, setStoredLi
 const modulePath = "/__local_fixture__/library-store.js";
 const fixture = (): Library => ({ version: 1, sections: [{ id: "s", name: "Personal", description: "", icon: "folder" }], projects: [{ ...demoLibrary.projects[0], id: "personal", sectionId: "s", name: "Personal idea", blocks: [{ id: "b", heading: "Heading", text: "Keep me" }] }] });
 
+test("starter provenance survives reload but not user saves, even when the content is unchanged", async ({ page }) => {
+  await page.goto("/");await expect(page.locator(".project-card > strong")).toHaveText("Example");await exposeLibraryStore(page);
+  const pristine=()=>page.evaluate(async path=>{const store=await import(path);return store.isPristineStarter(await store.readLocalLibrary());},modulePath);
+  expect(await pristine()).toBe(true);await page.reload();await expect(page.locator(".project-card > strong")).toHaveText("Example");expect(await pristine()).toBe(true);
+  // Old clients stored provenance in migration metadata, without the explicit starter marker.
+  await page.evaluate(async()=>{const db=await new Promise<IDBDatabase>(resolve=>{const r=indexedDB.open("idea-bank.local",1);r.onsuccess=()=>resolve(r.result);});await new Promise<void>(resolve=>{const tx=db.transaction("meta","readwrite");tx.objectStore("meta").delete("starter");tx.oncomplete=()=>resolve();});db.close();});
+  expect(await pristine()).toBe(true);
+  const library=await page.evaluate(readStoredLibrary);await setStoredLibrary(page,library);expect(await pristine()).toBe(false);
+});
+
+test("an imported library is personal data even if it exactly matches Example", async ({ page }) => {
+  await page.addInitScript(library=>localStorage.setItem("idea-bank.library.v1",JSON.stringify(library)),demoLibrary);
+  await page.goto("/");await expect(page.locator(".project-card > strong")).toHaveText("Example");await exposeLibraryStore(page);
+  expect(await page.evaluate(async path=>{const store=await import(path);return store.isPristineStarter(await store.readLocalLibrary());},modulePath)).toBe(false);
+});
+
 test("legacy library and media migrate once; the legacy backup is not rewritten", async ({ page }) => {
   const library = fixture();
   library.projects[0].blocks[0].media = [{ id: "asset", name: "test.wav", kind: "audio", mime: "audio/wav", size: 3 }];

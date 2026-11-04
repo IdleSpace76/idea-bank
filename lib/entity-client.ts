@@ -1,7 +1,7 @@
 import { type Library, type Project, type Section, type TextBlock } from "./ideas";
 import { canonicalLibrary, contentId, flattenLibrary, assembleLibrary, mergeValue, equal, entityKey, keyParts, parseEntity, type EntityMap, type EntityIndex, type EntityValue, type EntityRead, type SyncCheckpoint, type MergeConflict, type EntityChange } from "./entity-sync";
 import { libraryAssets, parseCloudSnapshot, parseCloudMedia, revisionPattern, type CloudMedia } from "./cloud-library";
-import { readMeta, readLocalSnapshot, saveLocalLibrary, saveSyncOperation } from "./library-store";
+import { readMeta, readLocalSnapshot, saveLocalLibrary, saveSyncOperation, isPristineStarter } from "./library-store";
 import { request, transaction } from "./local-database";
 import { cacheKey, type CacheState } from "./media-cache-store";
 import { readMediaFile } from "./media-store";
@@ -162,7 +162,12 @@ export async function inspectEntitySync(scope: string, library: Library, activat
   const read: EntityRead = await api("/api/sync",{ known: checkpoint?.index || {},activate });
   const remote = validateRead(read,checkpoint?.index || {},checkpoint?.values || {},checkpoint?.recovery || {});
   const plan: EntityPlan = { scope, expected: structuredClone(library), local, base, ...remote, read, sources, first, completedOperation, conflicts: [] };
-  plan.conflicts = resolvePlan(plan).conflicts;
+  if (first && await isPristineStarter(library)) {
+    plan.first = false;
+    // Even an intentionally empty cloud library has heads; never seed over its deletions.
+    if (read.heads.length) plan.resolveMode = "cloud";
+  }
+  plan.conflicts = resolvePlan(plan, {}, plan.resolveMode || "merge").conflicts;
   return plan;
 }
 async function uploadNeeded(plan: EntityPlan, values: EntityMap, changes: EntityChange[], progress: (message: string) => void) {
