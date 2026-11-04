@@ -102,11 +102,11 @@ try {
     const apply=b.getByRole("button",{name:"Применить выбранные варианты",exact:true});
     await expect(apply).toBeDisabled();
     const choose=async button=>{await button.scrollIntoViewIfNeeded();if(viewport.width<540)await button.tap();else await button.click();};
-    await choose(conflict.getByRole("button",{name:"Выбрать облачную версию 1",exact:true}));await expect(cloudChoice).toHaveAttribute("aria-pressed","true");await expect(localChoice).toHaveAttribute("aria-pressed","false");
-    await choose(conflict.getByRole("button",{name:"Выбрать локальную версию",exact:true}));await expect(localChoice).toHaveAttribute("aria-pressed","true");await expect(cloudChoice).toHaveAttribute("aria-pressed","false");
+    await choose(cloudChoice);await expect(cloudChoice).toHaveAttribute("aria-pressed","true");await expect(localChoice).toHaveAttribute("aria-pressed","false");
+    await choose(localChoice);await expect(localChoice).toHaveAttribute("aria-pressed","true");await expect(cloudChoice).toHaveAttribute("aria-pressed","false");
     assert.notEqual(await localChoice.evaluate(el=>getComputedStyle(el).backgroundColor),await cloudChoice.evaluate(el=>getComputedStyle(el).backgroundColor),"A selected version stays visibly highlighted after a touch");
-    await expect(conflict.locator(".sync-version-body").first()).toHaveAttribute("data-selected","true");
-    await expect(conflict.getByRole("button",{name:"Выбрать локальную версию",exact:true})).toHaveAttribute("aria-pressed","true");
+    await expect(conflict.locator(".sync-conflict-details button, .sync-conflict-details [aria-pressed], .sync-conflict-details [data-selected]")).toHaveCount(0);
+    await expect(conflict.locator(".menu-options .conflict-option")).toHaveCount(2);
     await expect(apply).toBeEnabled();await apply.scrollIntoViewIfNeeded();if(viewport.width<540)await apply.tap();else await apply.click();await success(b);
     await check(a);await success(a);assert.equal((await a.evaluate(readStoredLibrary)).projects.find(p=>p.id==="example").blocks[0].text,"B conflict");
     await close(a);await close(b);
