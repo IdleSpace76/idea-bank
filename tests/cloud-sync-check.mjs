@@ -26,7 +26,7 @@ try {
   for(const viewport of [{width:1440,height:1000},{width:390,height:844}]) {
     const fixture=memoryStorage(),contexts=[];let offline=false,corrupt=false,dropReply=false,failRead=false;const batches=[],reads=[],downloads=[];
     async function device(backend=fixture) {
-      const context=await browser.newContext({viewport});contexts.push(context);await context.addInitScript(()=>{localStorage.setItem("idea-bank.language","ru");Object.defineProperty(document,"visibilityState",{get:()=>"hidden"});});
+      const context=await browser.newContext({viewport,isMobile:viewport.width<540,hasTouch:viewport.width<540});contexts.push(context);await context.addInitScript(()=>{localStorage.setItem("idea-bank.language","ru");Object.defineProperty(document,"visibilityState",{get:()=>"hidden"});});
       await context.addCookies([{name:cookie,value:token,url:origin,httpOnly:true,sameSite:"Lax"}]);
       await context.route("**/api/**",async route=>{
         if(offline)return route.abort("failed");
@@ -98,7 +98,16 @@ try {
     await change(a,l=>l.projects.find(p=>p.id==="example").blocks[0].text="A conflict");await change(b,l=>l.projects.find(p=>p.id==="example").blocks[0].text="B conflict");
     await open(a);await check(a);await success(a);await open(b);await check(b);await expect(b.locator("[data-conflict-key]")).toHaveCount(1);
     await b.getByText("Сравнить версии",{exact:true}).click();await expect(b.locator(".sync-version-body").first()).toContainText("B conflict");await expect(b.locator(".sync-version-body").nth(1)).toContainText("A conflict");
-    await b.locator("[data-conflict-key]").getByRole("button",{name:/На этом устройстве/}).click();await b.getByRole("button",{name:"Применить выбранные варианты",exact:true}).click();await success(b);
+    const conflict=b.locator("[data-conflict-key]"),localChoice=conflict.getByRole("button",{name:/На этом устройстве/}),cloudChoice=conflict.getByRole("button",{name:/В облаке/});
+    const apply=b.getByRole("button",{name:"Применить выбранные варианты",exact:true});
+    await expect(apply).toBeDisabled();
+    const choose=async button=>{await button.scrollIntoViewIfNeeded();if(viewport.width<540)await button.tap();else await button.click();};
+    await choose(conflict.getByRole("button",{name:"Выбрать облачную версию 1",exact:true}));await expect(cloudChoice).toHaveAttribute("aria-pressed","true");await expect(localChoice).toHaveAttribute("aria-pressed","false");
+    await choose(conflict.getByRole("button",{name:"Выбрать локальную версию",exact:true}));await expect(localChoice).toHaveAttribute("aria-pressed","true");await expect(cloudChoice).toHaveAttribute("aria-pressed","false");
+    assert.notEqual(await localChoice.evaluate(el=>getComputedStyle(el).backgroundColor),await cloudChoice.evaluate(el=>getComputedStyle(el).backgroundColor),"A selected version stays visibly highlighted after a touch");
+    await expect(conflict.locator(".sync-version-body").first()).toHaveAttribute("data-selected","true");
+    await expect(conflict.getByRole("button",{name:"Выбрать локальную версию",exact:true})).toHaveAttribute("aria-pressed","true");
+    await expect(apply).toBeEnabled();await apply.scrollIntoViewIfNeeded();if(viewport.width<540)await apply.tap();else await apply.click();await success(b);
     await check(a);await success(a);assert.equal((await a.evaluate(readStoredLibrary)).projects.find(p=>p.id==="example").blocks[0].text,"B conflict");
     await close(a);await close(b);
     // Lost HTTP response: retry the persisted operation without a second commit.

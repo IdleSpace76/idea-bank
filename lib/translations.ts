@@ -1,5 +1,9 @@
 /** Interface text only. Never pass user-created content through this dictionary. */
 export const english: Record<string, string> = {
+  "Выбрать локальную версию": "Choose local version",
+  "Выбрать облачную версию {0}": "Choose cloud version {0}",
+  "Выбрать эту версию": "Choose this version",
+  "Выбрано": "Selected",
   "Повторить загрузку": "Retry loading",
   "Не удалось получить вложение из облака.": "Could not retrieve the cloud attachment.",
   "Показать ещё": "Show more",
