@@ -57,7 +57,7 @@ async function inspectSource(relative) {
     }
     if (relative === ".env.example" && text.split(/\r?\n/).some(line => {
       const value = line.trim();
-      return value && !value.startsWith("#") && value !== "IDEA_BANK_AUTH_MODE=local" && !/^(?:AUTH_URL|AUTH_SECRET|AUTH_GITHUB_ID|AUTH_GITHUB_SECRET|IDEA_BANK_OWNER_ID|B2_S3_ENDPOINT|B2_REGION|B2_BUCKET_NAME|B2_KEY_ID|B2_APPLICATION_KEY)=$/.test(value);
+      return value && !value.startsWith("#") && value !== "IDEA_BANK_AUTH_MODE=local" && !/^(?:AUTH_URL|AUTH_SECRET|AUTH_GITHUB_ID|AUTH_GITHUB_SECRET|IDEA_BANK_OWNER_ID|B2_S3_ENDPOINT|B2_REGION|B2_BUCKET_NAME|B2_KEY_ID|B2_APPLICATION_KEY|ABLY_API_KEY)=$/.test(value);
     })) throw new Error(".env.example may contain only local mode and empty credential placeholders.");
   }
   return bytes;

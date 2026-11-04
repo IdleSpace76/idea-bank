@@ -2,6 +2,7 @@ import { storageEndpoint, readStorageBody } from "@/lib/storage-api";
 import { EntityStorage } from "@/lib/entity-storage";
 import { invalid, StorageError, revisionPattern } from "@/lib/cloud-library";
 import { keyParts, type EntityIndex } from "@/lib/entity-sync";
+import { saveAndNotify } from "@/lib/sync-events-server";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 export async function GET(request: Request) {
@@ -22,6 +23,6 @@ export async function PUT(request: Request) {
     const value=await readStorageBody(request), service=new EntityStorage(storage);
     if (!value || typeof value !== "object" || !("operationId" in value) || !("changes" in value)) return invalid();
     if ((await service.status()).requiresMigration) throw new StorageError(409,"MIGRATION_REQUIRED","Требуется переход на новую синхронизацию.");
-    return service.save(value);
+    return saveAndNotify(() => service.save(value));
   });
 }

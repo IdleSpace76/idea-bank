@@ -15,7 +15,7 @@ await writeFile(new URL("local-fixture.mjs",directory),ts.transpileModule(await 
 const { readStoredLibrary,setStoredLibrary }=await import(new URL("local-fixture.mjs",directory));
 const probe=createServer();await new Promise(r=>probe.listen(0,"127.0.0.1",r));const port=probe.address().port;await new Promise(r=>probe.close(r));
 const origin=`http://127.0.0.1:${port}`,secret="isolated-entity-sync-fixture-at-least-32-characters";
-const server=spawn(process.execPath,["node_modules/next/dist/bin/next","start","--hostname","127.0.0.1","--port",String(port)],{windowsHide:true,stdio:["ignore","pipe","pipe"],env:{...process.env,IDEA_BANK_AUTH_MODE:"github",AUTH_URL:origin,AUTH_SECRET:secret,AUTH_GITHUB_ID:"fixture",AUTH_GITHUB_SECRET:"fixture",IDEA_BANK_OWNER_ID:"12345",B2_S3_ENDPOINT:"https://s3.eu-central-003.backblazeb2.com",B2_REGION:"eu-central-003",B2_BUCKET_NAME:"fixture-bucket",B2_KEY_ID:"fixture",B2_APPLICATION_KEY:"fixture"}});
+const server=spawn(process.execPath,["node_modules/next/dist/bin/next","start","--hostname","127.0.0.1","--port",String(port)],{windowsHide:true,stdio:["ignore","pipe","pipe"],env:{...process.env,IDEA_BANK_AUTH_MODE:"github",AUTH_URL:origin,AUTH_SECRET:secret,AUTH_GITHUB_ID:"fixture",AUTH_GITHUB_SECRET:"fixture",IDEA_BANK_OWNER_ID:"12345",B2_S3_ENDPOINT:"https://s3.eu-central-003.backblazeb2.com",B2_REGION:"eu-central-003",B2_BUCKET_NAME:"fixture-bucket",B2_KEY_ID:"fixture",B2_APPLICATION_KEY:"fixture",ABLY_API_KEY:""}});
 server.stdout.resume();server.stderr.resume();let browser;
 const hash=(bytes,kind="sha256")=>createHash(kind).update(bytes).digest("hex");
 try {
@@ -24,14 +24,38 @@ try {
   const cookie="authjs.session-token",token=await encode({secret,salt:cookie,token:{sub:"12345",name:"Entity sync fixture"},maxAge:1800});
 
   const fixture=memoryStorage(),contexts=[],states=new Map(),batches=[];
+  const eventChannel="idea-bank:sync:"+"a".repeat(64),sockets=new Set();
+  let eventSerial=0;
+  const broadcast=revision=>{for(const socket of sockets)if(socket.attached)socket.ws.send(JSON.stringify({action:15,channel:eventChannel,messages:[{name:"library-changed",data:{version:1,revision},id:`fixture:${eventSerial++}:0`,timestamp:Date.now()}]}));};
   const seed={version:1,sections:[{id:"section",name:"Test",description:"",icon:"folder"}],projects:[{id:"idea",sectionId:"section",name:"Auto idea",description:"Base",cover:"forest",updatedAt:"2026-11-01T00:00:00Z",blocks:[{id:"block",heading:"Block",text:"Base text"}]}]};
-  async function device(viewport={width:1440,height:1000}) {
+  async function device(viewport={width:1440,height:1000},events=false,startOffline=false) {
     const context=await browser.newContext({viewport});contexts.push(context);
     await context.addInitScript(seed=>{localStorage.setItem("idea-bank.language","ru");localStorage.setItem("idea-bank.library.v1",JSON.stringify(seed));},seed);
+    if(startOffline)await context.addInitScript(()=>Object.defineProperty(navigator,"onLine",{configurable:true,get:()=>false}));
     await context.addCookies([{name:cookie,value:token,url:origin,httpOnly:true,sameSite:"Lax"}]);
-    const state={offline:false,unauth:false,hold:null,entered:null,calls:0,active:0,maxActive:0};
+    const state={offline:false,unauth:false,hold:null,entered:null,calls:0,active:0,maxActive:0,eventTokens:0,sockets:[],eventsUnavailable:false};
+    await context.routeWebSocket(/.*/,ws=>{
+      const socket={ws,attached:false};state.sockets.push(socket);sockets.add(socket);
+      ws.onClose(()=>sockets.delete(socket));
+      ws.onMessage(raw=>{
+        const frames=JSON.parse(String(raw));
+        for(const frame of Array.isArray(frames)?frames:[frames]){
+          if(frame.action===10){socket.attached=true;ws.send(JSON.stringify({action:11,channel:frame.channel}));}
+          if(frame.action===12){socket.attached=false;ws.send(JSON.stringify({action:13,channel:frame.channel}));}
+          if(frame.action===5){sockets.delete(socket);ws.send(JSON.stringify({action:7}));ws.close();}
+          if(frame.action===0)ws.send(JSON.stringify({action:0}));
+        }
+      });
+      ws.send(JSON.stringify({action:4,connectionId:randomUUID(),connectionKey:randomUUID(),connectionDetails:{connectionStateTtl:120000,maxIdleInterval:3600000}}));
+    });
     await context.route("**/api/sync**",async route=>{
-      const req=route.request();state.calls++;
+      const req=route.request();
+      if(new URL(req.url()).pathname==="/api/sync/events/token"){
+        state.eventTokens++;
+        if(state.eventsUnavailable)return route.fulfill({status:503,body:"Unavailable"});
+        return route.fulfill({contentType:"application/json",body:JSON.stringify(events?{enabled:true,channel:eventChannel,token:"fixture-token",expiresAt:Date.now()+900000}:{enabled:false})});
+      }
+      state.calls++;
       if(state.offline)return route.abort("failed");
       const reply=(body,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(body)});
       if(state.unauth)return reply({error:{message:"Session expired"}},401);
@@ -39,12 +63,12 @@ try {
       try {
         if(state.hold&&req.method()==="POST"){state.entered?.();await state.hold;}
         if(req.method()==="GET")return await reply(await fixture.entities().status());
-        if(req.method()==="PUT"){const body=req.postDataJSON();batches.push(body);return await reply(await fixture.entities().save(body));}
+        if(req.method()==="PUT"){const body=req.postDataJSON();batches.push(body);const result=await fixture.entities().save(body);broadcast(result.revision);return await reply(result);}
         return await reply(await fixture.entities().read(req.postDataJSON().known));
       }catch(error){return await reply({error:{code:error.code,message:error.message}},error.status||502);}
       finally{state.active--;}
     });
-    const page=await context.newPage();states.set(page,state);await page.goto(origin);await expect(page.locator(".project-card > strong")).toHaveText("Auto idea");return page;
+    const page=await context.newPage();await page.clock.install();states.set(page,state);await page.goto(origin);await expect(page.locator(".project-card > strong")).toHaveText("Auto idea");return page;
   }
   const phase=(page,name)=>expect(page.locator(".local-status")).toHaveAttribute("data-sync-phase",name,{timeout:15000});
   const open=page=>page.locator(".local-status").click();
@@ -53,6 +77,8 @@ try {
   const library=page=>page.evaluate(readStoredLibrary);
   const edit=async(page,mutate)=>{const value=await library(page);mutate(value);await setStoredLibrary(page,value);};
   const readDescription=async page=>(await library(page)).projects[0].description;
+  const initiallyOffline=await device({width:390,height:844},false,true);await phase(initiallyOffline,"offline");assert.equal(states.get(initiallyOffline).calls,0);assert.equal(states.get(initiallyOffline).eventTokens,0);
+  await initiallyOffline.evaluate(()=>{Object.defineProperty(navigator,"onLine",{configurable:true,get:()=>true});window.dispatchEvent(new Event("online"));});await phase(initiallyOffline,"review");await initiallyOffline.context().close();
   const a=await device();await phase(a,"review");await open(a);await a.getByRole("button",{name:"Сохранить локальную в облаке",exact:true}).click();await phase(a,"synced");await close(a);
   const b=await device({width:390,height:844});await phase(b,"review");await open(b);b.once("dialog",d=>d.accept());await b.getByRole("button",{name:"Загрузить облачную на устройство",exact:true}).click();await phase(b,"synced");await close(b);
   // Save through the real metadata form. Sync continues with its dialog closed.
@@ -93,7 +119,41 @@ try {
   await wake(a);await Promise.race([inRead,delay(15000).then(()=>{throw new Error("Tab read did not start");})]);await wake(second);await delay(600);assert.equal(states.get(a).maxActive,1,"One tab owns the sync lock");states.get(a).hold=null;unlock();await phase(a,"synced");await phase(second,"synced");
   // Periodic polling discovers remote changes without a focus event.
   await second.close();await edit(a,l=>l.projects[0].description="Periodic pull");await phase(a,"synced");
-  await expect.poll(()=>readDescription(b),{timeout:27000,intervals:[500]}).toBe("Periodic pull");
+  await b.clock.runFor(3000);await delay(500);await b.clock.fastForward(65000);
+  await expect.poll(()=>readDescription(b),{timeout:15000,intervals:[500]}).toBe("Periodic pull");
+
+  // Real Ably SDK over an isolated protocol fixture: no provider account or network is used.
+  const c=await device({width:1440,height:1000},true);await phase(c,"review");await open(c);c.once("dialog",d=>d.accept());await c.getByRole("button",{name:"Загрузить облачную на устройство",exact:true}).click();await phase(c,"synced");await close(c);
+  const d=await device({width:390,height:844},true);await phase(d,"review");await open(d);d.once("dialog",dialog=>dialog.accept());await d.getByRole("button",{name:"Загрузить облачную на устройство",exact:true}).click();await phase(d,"synced");await close(d);
+  await expect.poll(()=>[...sockets].filter(socket=>socket.attached).length).toBe(2);
+  await edit(c,l=>l.projects[0].description="Event-driven pull");await phase(c,"synced");
+  await expect.poll(()=>readDescription(d)).toBe("Event-driven pull");
+  await delay(2500);const eventCalls=states.get(d).calls;
+  await d.clock.fastForward(61000);await delay(500);
+  assert.equal(states.get(d).calls,eventCalls,"A healthy subscription does not poll every minute");
+  const knownRevision=(await fixture.entities().read()).heads[0];broadcast(knownRevision);broadcast(knownRevision);await d.clock.runFor(2000);await delay(500);
+  assert.equal(states.get(d).calls,eventCalls,"Known/repeated events do not trigger new reads");
+  // A missed event is eventually recovered by the ten-minute safety check.
+  const cloud=await fixture.entities().read(),ideaRecord=cloud.records.find(record=>record.key.startsWith("idea:"));
+  await fixture.entities().save({operationId:randomUUID(),heads:cloud.heads,changes:[{key:ideaRecord.key,base:cloud.index[ideaRecord.key],value:{...ideaRecord.value,description:"Missed event"}}]});
+  await d.clock.fastForward(600000);await expect.poll(()=>readDescription(d)).toBe("Missed event");
+  // An unknown-event burst is coalesced, and cannot overwrite an open draft.
+  await d.goto(origin+"/#/project/idea");await d.getByRole("button",{name:"Редактировать блок 1",exact:true}).click();await d.getByLabel("Заголовок блока",{exact:true}).fill("Event-safe draft");
+  const draftCalls=states.get(d).calls;for(let i=0;i<10;i++)broadcast(randomUUID());await d.clock.runFor(5000);await delay(500);
+  assert.equal(states.get(d).calls,draftCalls);await expect(d.getByLabel("Заголовок блока",{exact:true})).toHaveValue("Event-safe draft");
+  d.once("dialog",dialog=>dialog.accept());await d.getByRole("button",{name:"Отмена",exact:true}).click();await d.clock.runFor(2500);await phase(d,"synced");
+  // Provider failure falls back to storage checks; restoring it resumes event-driven pulls.
+  states.get(d).eventsUnavailable=true;
+  for(const socket of states.get(d).sockets)if(sockets.has(socket))socket.ws.send(JSON.stringify({action:9,channel:eventChannel,error:{code:40160,statusCode:401,message:"Fixture subscription failure"}}));
+  await expect.poll(()=>[...sockets].filter(socket=>socket.attached).length).toBe(1);
+  const fallbackCloud=await fixture.entities().read(),fallbackIdea=fallbackCloud.records.find(record=>record.key.startsWith("idea:"));
+  await fixture.entities().save({operationId:randomUUID(),heads:fallbackCloud.heads,changes:[{key:fallbackIdea.key,base:fallbackCloud.index[fallbackIdea.key],value:{...fallbackIdea.value,description:"Provider unavailable"}}]});
+  await d.clock.fastForward(65000);await expect.poll(()=>readDescription(d)).toBe("Provider unavailable");
+  states.get(d).eventsUnavailable=false;await d.evaluate(()=>window.dispatchEvent(new Event("online")));await d.clock.runFor(2500);
+  await expect.poll(()=>[...sockets].filter(socket=>socket.attached).length).toBe(2);
+  await wake(c);await expect.poll(()=>readDescription(c)).toBe("Provider unavailable");
+  await edit(c,l=>l.projects[0].description="Events restored");await phase(c,"synced");await d.clock.runFor(2500);await expect.poll(()=>readDescription(d)).toBe("Events restored");
+  await c.context().close();await d.context().close();
 
   // Browsers without Web Locks use the same transactional IndexedDB lease across tabs.
   const fallback=await browser.newContext();contexts.push(fallback);
@@ -121,7 +181,7 @@ try {
   await first.clock.runFor(10050);await expect.poll(()=>first.evaluate(()=>window.isValid())).toBe(false);await first.evaluate(async()=>{window.release();await window.holding;});
   for(const page of [a,b])assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
   for(const context of contexts)await context.close();fixture.storage.client.destroy();
-  console.log("Automatic sync checks passed: one-time setup, UI save, startup pull, debounce, retry/online, draft protection, auth pause, conflicts, cross-tab lock and fallback lease recovery, no feedback loop, route preservation and periodic mobile pull.");
+  console.log("Automatic sync checks passed: UI saves, startup/fallback pulls, retries, drafts, conflicts, cross-tab locks, event-driven mobile pulls, no frequent polling, duplicate events, missed-event recovery and provider outage/reconnection.");
 } finally {
-  if(browser)await browser.close();server.kill();await new Promise(resolve=>{if(server.exitCode!==null)resolve();else server.once("exit",resolve);});
+  if(browser)await browser.close();server.kill("SIGKILL");await new Promise(resolve=>{if(server.exitCode!==null)resolve();else server.once("exit",resolve);});
 }
