@@ -187,3 +187,47 @@ test("Example is the only starter idea and reset requires explicit replacement",
   expect(restored).toEqual(demoLibrary);
   await expect.poll(async () => (await snapshot(page)).files.length).toBe(2);
 });
+
+test("clear your head requires confirmation and resets the library to one complete Example", async ({ page }) => {
+  await seed(page, smallLibrary(), [{ id: "shared-image", mime: "image/png", base64: pixel.toString("base64") }]);
+  const before = await snapshot(page); await openBackups(page);
+  const trigger = page.locator(".backup-reset-buttons").getByRole("button", { name: "Очистить голову", exact: true });
+  const example = page.getByRole("button", { name: "Загрузить Example", exact: true });
+  const exportButton = page.getByRole("button", { name: "Экспортировать ZIP", exact: true });
+  expect(Math.abs((await example.boundingBox())!.width - (await exportButton.boundingBox())!.width)).toBeLessThan(1);
+  expect(Math.abs((await example.boundingBox())!.width - (await trigger.boundingBox())!.width)).toBeLessThan(1);
+  await trigger.click();
+  const warning = page.getByRole("dialog", { name: "Очистить голову?", exact: true });
+  await expect(warning).toContainText("удалит все идеи и разделы");
+  await expect(warning.getByRole("button", { name: "Отмена", exact: true })).toBeFocused();
+  expect(await snapshot(page)).toEqual(before);
+  await warning.getByRole("button", { name: "Отмена", exact: true }).click(); await expect(warning).toHaveCount(0);
+  expect(await snapshot(page)).toEqual(before);
+  await trigger.click(); await page.keyboard.press("Escape"); await expect(warning).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Резервная копия", exact: true })).toBeVisible();
+  expect(await snapshot(page)).toEqual(before);
+  await trigger.click(); await warning.getByRole("button", { name: "Очистить голову", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.reload(); await expect(page.locator(".project-card > strong")).toHaveText("Example");
+  const library = await page.evaluate(readStoredLibrary);
+  expect(library.sections).toEqual(demoLibrary.sections); expect(library.projects).toHaveLength(1);
+  expect(library.projects[0].blocks.map(block => block.heading)).toEqual(demoLibrary.projects[0].blocks.map(block => block.heading));
+  expect(library.projects[0].blocks.flatMap(block => block.media || []).map(asset => asset.name)).toEqual(["little-robot.png", "little-robot.glb"]);
+  await expect.poll(async () => (await snapshot(page)).files.length).toBe(2);
+});
+
+test("failed or stale clear-your-head requests preserve the existing library", async ({ page }) => {
+  await seed(page, smallLibrary(), [{ id: "shared-image", mime: "image/png", base64: pixel.toString("base64") }]);
+  await openBackups(page); const before = await snapshot(page);
+  const trigger = page.locator(".backup-reset-buttons").getByRole("button", { name: "Очистить голову", exact: true });
+  const warning = page.getByRole("dialog", { name: "Очистить голову?", exact: true });
+  await page.route("**/examples/little-robot.png", route => route.abort());
+  await trigger.click(); await warning.getByRole("button", { name: "Очистить голову", exact: true }).click();
+  await expect(page.locator(".backup-error")).toContainText("Не удалось загрузить медиа Example");
+  expect(await snapshot(page)).toEqual(before); await page.unroute("**/examples/little-robot.png");
+  await trigger.click();
+  const changed = smallLibrary(); changed.projects[0].name = "Newer data in another tab"; await setStoredLibrary(page, changed);
+  await warning.getByRole("button", { name: "Очистить голову", exact: true }).click();
+  await expect(page.locator(".backup-error")).toContainText("другой вкладке");
+  expect(await page.evaluate(readStoredLibrary)).toEqual(changed); expect((await snapshot(page)).files).toEqual(before.files);
+});

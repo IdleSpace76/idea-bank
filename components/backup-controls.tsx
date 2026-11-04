@@ -3,8 +3,8 @@ import { translate as t, getLocale } from "@/lib/i18n";
 import { useI18n } from "./language-picker";
 import { loadExampleMedia } from "@/lib/example-media";
 
-import { useRef, useState } from "react";
-import { Download, FileArchive, LoaderCircle, RotateCcw, Upload } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Download, Eraser, FileArchive, LoaderCircle, RotateCcw, Upload, X } from "lucide-react";
 import { demoLibrary, STORAGE_KEY, type Library } from "@/lib/ideas";
 import { createLibraryBackup, readLibraryBackup, restoreLibraryBackup, type LibraryBackup } from "@/lib/library-backup";
 
@@ -15,14 +15,30 @@ function download(blob: Blob, filename: string) {
 }
 const sizeLabel = (bytes: number) => bytes < 1024 * 1024 ? t("{0} КБ", { 0: (bytes / 1024).toLocaleString(getLocale(), { maximumFractionDigits: 1 }) }) : t("{0} МБ", { 0: (bytes / (1024 * 1024)).toLocaleString(getLocale(), { maximumFractionDigits: 1 }) });
 
+async function prepareExampleBackup(): Promise<LibraryBackup> {
+  const files = await loadExampleMedia().catch(() => { throw new Error(t("Не удалось загрузить медиа Example. Проверь соединение и попробуй ещё раз.")); });
+  return { library: structuredClone(demoLibrary), files, createdAt: demoLibrary.projects[0].updatedAt, totalBytes: new TextEncoder().encode(JSON.stringify(demoLibrary)).length + [...files.values()].reduce((sum, file) => sum + file.size, 0) };
+}
+
 export function BackupControls({ scope, library, locked, readOnly, onBusyChange, onRestored }: { scope?: string; library: Library; locked: boolean; readOnly: boolean; onBusyChange: (busy: boolean) => void; onRestored: (library: Library) => void }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false), [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<LibraryBackup | null>(null);
   const [examplePreview, setExamplePreview] = useState(false);
+  const [resetRequested, setResetRequested] = useState(false);
+  const resetDialog = useRef<HTMLDialogElement>(null);
+  const resetCancel = useRef<HTMLButtonElement>(null);
+  const resetBase = useRef<Library | null>(null);
   const active = useRef(false);
   const previewBase = useRef<Library | null>(null);
+  useEffect(() => {
+    if (!resetRequested) return;
+    const dialog = resetDialog.current;
+    dialog?.showModal(); resetCancel.current?.focus();
+    return () => dialog?.close();
+  }, [resetRequested]);
+  function closeReset() { resetDialog.current?.close(); setResetRequested(false); resetBase.current = null; }
   function begin(message: string) { if (active.current || locked) return false; active.current = true; setBusy(true); onBusyChange(true); setStatus(message); setError(""); return true; }
   function finish() { active.current = false; setBusy(false); onBusyChange(false); }
   async function exportZip() {
@@ -60,10 +76,18 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
     if (!begin(t("Подготавливаем медиа…"))) return;
     try {
       previewBase.current = structuredClone(library);
-      const files = await loadExampleMedia();
-      setPreview({ library: structuredClone(demoLibrary), files, createdAt: demoLibrary.projects[0].updatedAt, totalBytes: new TextEncoder().encode(JSON.stringify(demoLibrary)).length + [...files.values()].reduce((sum, file) => sum + file.size, 0) });
+      setPreview(await prepareExampleBackup());
       setExamplePreview(true); setError(""); setStatus(t("Пример подготовлен. Текущая библиотека пока не изменена."));
     } catch { setPreview(null); setError(t("Не удалось загрузить медиа Example. Проверь соединение и попробуй ещё раз.")); }
+    finally { finish(); }
+  }
+  /** Reset the active library through the same atomic restore and durable sync queue as ZIP import. */
+  async function resetLibrary() {
+    if (readOnly || !resetBase.current || !begin(t("Возвращаем рабочее пространство в исходный вид…"))) return;
+    const base = resetBase.current;
+    closeReset(); setPreview(null); setExamplePreview(false);
+    try { const next = await restoreLibraryBackup(await prepareExampleBackup(), base); onRestored(next); }
+    catch (reason) { setStatus(""); setError(reason instanceof Error ? reason.message : t("Не удалось очистить рабочее пространство. Прежняя библиотека сохранена.")); }
     finally { finish(); }
   }
   return <section className="backup-controls" aria-labelledby="backup-title" aria-busy={busy}>
@@ -75,7 +99,16 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
       <button type="button" className="secondary-button" disabled={busy || locked || readOnly} onClick={() => { void exportZip(); }}><Download />{t("Экспортировать ZIP")}</button>
       <label className={`secondary-button backup-upload ${busy || locked ? "is-disabled" : ""}`}><Upload />{t("Импортировать ZIP")}<input type="file" accept=".zip,application/zip,application/x-zip-compressed" aria-label={t("Выбрать архив библиотеки")} disabled={busy || locked} onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void inspect(file); }} /></label>
     </div>
-    <button type="button" className="secondary-button example-reset" disabled={busy || locked} onClick={previewExample}><RotateCcw />{t("Загрузить Example")}</button>
+    <div className="backup-buttons backup-reset-buttons">
+      <button type="button" className="secondary-button" disabled={busy || locked} onClick={previewExample}><RotateCcw />{t("Загрузить Example")}</button>
+      <button type="button" className="secondary-button danger" disabled={busy || locked || readOnly} onClick={() => { resetBase.current = structuredClone(library); setResetRequested(true); }}><Eraser />{t("Очистить голову")}</button>
+    </div>
+    {resetRequested && <dialog ref={resetDialog} className="dialog reset-confirmation" aria-labelledby="reset-library-title" aria-describedby="reset-library-warning" onCancel={event => { event.preventDefault(); event.stopPropagation(); closeReset(); }} onClick={event => { if (event.target === event.currentTarget) closeReset(); }}>
+      <div className="dialog-header"><h2 id="reset-library-title">{t("Очистить голову?")}</h2><button type="button" className="icon-button" aria-label={t("Закрыть")} onClick={closeReset}><X /></button></div>
+      <p id="reset-library-warning">{t("Внимание! Это действие удалит все идеи и разделы и вернёт рабочее пространство в исходный вид с одной идеей Example. Перед очисткой можно экспортировать ZIP-копию.")}</p>
+      {scope && <p>{t("Если подключено облако, сброс будет синхронизирован с другими устройствами.")}</p>}
+      <div className="form-actions"><button type="button" className="secondary-button" ref={resetCancel} onClick={closeReset}>{t("Отмена")}</button><button type="button" className="primary-button reset-library-confirm" disabled={busy || locked || readOnly} onClick={() => { void resetLibrary(); }}>{t("Очистить голову")}</button></div>
+    </dialog>}
     {status && <p className="backup-status" role="status">{busy && <LoaderCircle />}{t(status)}</p>}
     {error && <p className="backup-error" role="alert">{t(error)}</p>}
     {preview && <div className="backup-preview">

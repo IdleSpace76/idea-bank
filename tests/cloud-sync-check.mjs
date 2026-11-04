@@ -147,6 +147,17 @@ try {
     const d=await device(legacy);await open(d);await check(d);await expect(d.getByRole("button",{name:"Перейти на новую синхронизацию",exact:true})).toBeVisible();assert.equal([...legacy.objects.keys()].filter(k=>k.includes("/indexes/")).length,0);
     await d.getByRole("button",{name:"Перейти на новую синхронизацию",exact:true}).click();await expect(d.getByRole("button",{name:"Загрузить облачную на устройство",exact:true})).toBeVisible();d.once("dialog",dialog=>dialog.accept());await d.getByRole("button",{name:"Загрузить облачную на устройство",exact:true}).click();await success(d);
     assert.equal((await d.evaluate(readStoredLibrary)).projects[0].name,"Legacy idea");legacy.storage.client.destroy();
+    // An explicitly confirmed reset propagates deletions without clearing sync history/checkpoints.
+    await close(a);await open(a);await check(a);await success(a);
+    await a.locator(".backup-reset-buttons").getByRole("button",{name:"Очистить голову",exact:true}).click();
+    const resetWarning=a.getByRole("dialog",{name:"Очистить голову?",exact:true});
+    await expect(resetWarning).toContainText("с другими устройствами");
+    await resetWarning.getByRole("button",{name:"Очистить голову",exact:true}).click();
+    await expect(a.getByRole("dialog")).toHaveCount(0);await open(a);await check(a);await success(a);
+    await check(b);await success(b);
+    assert.deepEqual((await b.evaluate(readStoredLibrary)).projects.map(idea=>idea.name),["Example"]);
+    assert.deepEqual((await a.evaluate(readStoredLibrary)).sections,(await b.evaluate(readStoredLibrary)).sections);
+    await check(b);await success(b);assert.equal((await b.evaluate(readStoredLibrary)).projects.length,1,"Reset ideas are not resurrected by a later check");
     await b.screenshot({path:new URL(`sync-${viewport.width}.png`,directory).pathname.replace(/^\/([A-Za-z]:)/,"$1")});
     for(const page of [a,b,c])assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
     for(const context of contexts)await context.close();fixture.storage.client.destroy();
