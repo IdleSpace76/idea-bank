@@ -42,10 +42,16 @@ try {
 } finally { fixture.storage.client.destroy(); }
 const legacy=memoryStorage();
 try {
-  const saved=await legacy.storage.saveLibrary({baseRevisions:[],library,media:[]});
+  const formatted=structuredClone(library);
+  formatted.projects[0].blocks[0].richText={type:"doc",content:[{type:"paragraph",content:[{type:"text",text:"Original",marks:[{type:"bold"},{type:"textStyle",attrs:{color:"#aabbcc",fontSize:"24px"}},{type:"link",attrs:{href:"https://example.org/"}}]}]}]};
+  const saved=await legacy.storage.saveLibrary({baseRevisions:[],library:formatted,media:[]});
   const migrated=await legacy.entities().read();assert.equal(migrated.heads.length,1);
   assert.equal(assembleLibrary(Object.fromEntries(migrated.records.map(r=>[r.key,r.value]))).projects[0].name,"Idea A");
+  assert.deepEqual(assembleLibrary(Object.fromEntries(migrated.records.map(r=>[r.key,r.value]))),formatted,"Migration must preserve formatting after sorted JSON storage");
   const count=legacy.objects.size;await legacy.entities().read();assert.equal(legacy.objects.size,count);
+  const richKey=entityKey("block","a","b1"),richBlock=migrated.records.find(record=>record.key===richKey).value;
+  await legacy.entities().save({operationId:randomUUID(),heads:migrated.heads,changes:[{key:richKey,base:migrated.index[richKey],value:{...richBlock,heading:"Edited heading"}}]});
+  const richRead=await legacy.entities().read();assert.deepEqual(richRead.records.find(record=>record.key===richKey).value.richText,formatted.projects[0].blocks[0].richText);
   await assert.rejects(()=>legacy.storage.saveLibrary({baseRevisions:[saved.snapshot.revision],library,media:[]}),e=>e.code==="CLIENT_UPGRADE_REQUIRED");
   console.log("Legacy migration checks passed: preserved snapshot, deterministic import and repeatable migration.");
 } finally { legacy.storage.client.destroy(); }

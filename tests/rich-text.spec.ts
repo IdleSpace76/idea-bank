@@ -1,7 +1,8 @@
+import { stable } from "../lib/entity-sync";
 import { readStoredLibrary } from "./local-fixture";
 import { expect, test } from "@playwright/test";
 import { demoLibrary, parseLibrary, STORAGE_KEY } from "../lib/ideas";
-import { normalizeRichText, plainTextDocument, richTextToPlain, safeLink } from "../lib/rich-text";
+import { isNormalizedRichText, normalizeRichText, plainTextDocument, richTextToPlain, safeLink } from "../lib/rich-text";
 
 test("rich text normalization preserves plain text and rejects unsafe content", () => {
   const text = "Строка\nПродолжение\n\nАбзац\n";
@@ -15,6 +16,22 @@ test("rich text normalization preserves plain text and rejects unsafe content", 
   const invalid = structuredClone(demoLibrary);
   invalid.projects[0].blocks[0].richText = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "x", marks: [{ type: "link", attrs: { href: "javascript:alert(1)" } }] }] }] };
   expect(() => parseLibrary(JSON.stringify(invalid))).toThrow();
+});
+
+test("cloud JSON property sorting preserves valid formatting without accepting unsafe attributes", () => {
+  const library=structuredClone(demoLibrary);
+  const richText=normalizeRichText({type:"doc",content:[{type:"paragraph",content:[{type:"text",text:"Formatted",marks:[{type:"bold"},{type:"link",attrs:{href:"https://example.org/"}},{type:"textStyle",attrs:{color:"#aabbcc",fontSize:"24px"}}]}]}]});
+  library.projects[0].blocks[0].richText=richText;
+  library.projects[0].blocks[0].text="Formatted";
+  const sorted=stable(library);
+  expect(parseLibrary(sorted)).toEqual(library);
+  expect(isNormalizedRichText(JSON.parse(stable(richText)))).toBe(true);
+  const unsafe=JSON.parse(sorted);
+  unsafe.projects[0].blocks[0].richText.content[0].content[0].marks[1].attrs.href="javascript:alert(1)";
+  expect(()=>parseLibrary(JSON.stringify(unsafe))).toThrow();
+  const extra=JSON.parse(sorted);
+  extra.projects[0].blocks[0].richText.content[0].content[0].marks[2].attrs.onclick="alert(1)";
+  expect(()=>parseLibrary(JSON.stringify(extra))).toThrow();
 });
 
 test("formatting and links survive save, reload and reopening the editor", async ({ page }, info) => {

@@ -1,5 +1,5 @@
 import { exampleMedia } from "./example-media";
-import { normalizeRichText, type RichDocument } from "./rich-text";
+import { isNormalizedRichText, type RichDocument } from "./rich-text";
 
 export const STORAGE_KEY = "idea-bank.library.v1";
 
@@ -93,7 +93,7 @@ export function parseLibrary(raw: string): Library {
       if (b.headingFontSize !== undefined && (typeof b.headingFontSize !== "number" || !Number.isFinite(b.headingFontSize) || b.headingFontSize < 12 || b.headingFontSize > 48)) throw new Error("Invalid heading font size");
       if (b.textPosition !== undefined && b.textPosition !== "above" && b.textPosition !== "below") throw new Error("Invalid text position");
       if (b.richText !== undefined) {
-        if (JSON.stringify(normalizeRichText(b.richText)) !== JSON.stringify(b.richText)) throw new Error("Invalid rich text");
+        if (!isNormalizedRichText(b.richText)) throw new Error("Invalid rich text");
       }
       if (b.width !== undefined && !["full", "half", "third"].includes(String(b.width))) throw new Error("Invalid block width");
       if (b.media !== undefined) {

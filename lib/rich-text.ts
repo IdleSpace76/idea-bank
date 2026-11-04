@@ -56,6 +56,20 @@ export function richTextToPlain(doc: RichDocument): string {
   return doc.content.map(paragraph => paragraph.content.map(node => node.type === "text" ? node.text : "\n").join("")).join("\n\n");
 }
 
+/** Object property order is irrelevant in JSON; array order and every attribute remain significant. */
+function sameJson(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (Array.isArray(left)) return Array.isArray(right) && left.length === right.length && left.every((value,index) => sameJson(value,right[index]));
+  if (!left || !right || typeof left !== "object" || typeof right !== "object" || Array.isArray(right)) return false;
+  const keys = Object.keys(left), other = right as Record<string,unknown>;
+  return keys.length === Object.keys(right).length && keys.every(key => Object.hasOwn(other,key) && sameJson((left as Record<string,unknown>)[key],other[key]));
+}
+
+export function isNormalizedRichText(value: unknown): value is RichDocument {
+  try { return sameJson(normalizeRichText(value),value); }
+  catch { return false; }
+}
+
 export function plainTextDocument(text: string): RichDocument {
   return { type: "doc", content: text.split("\n\n").map(paragraph => ({ type: "paragraph", content: paragraph.split("\n").flatMap((line, index): RichInline[] => [...(index ? [{ type: "hardBreak" } as const] : []), ...(line ? [{ type: "text", text: line } as const] : [])]) })) };
 }
