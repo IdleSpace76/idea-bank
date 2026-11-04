@@ -87,19 +87,22 @@ export class B2Storage {
   /** Check every referenced object before publishing metadata; existing snapshots are never overwritten. */
   async saveLibrary(input: unknown) {
     const saved = parseCloudSave(input);
+    await this.assertLegacyWritable();
     const before = await this.listRevisions();
     if (JSON.stringify(before.heads) !== JSON.stringify(saved.baseRevisions)) throw new StorageError(409, "CONFLICT", "Библиотека изменилась на другом устройстве. Локальные изменения не перезаписаны.", before.heads);
     for (let start = 0; start < saved.media.length; start += 12) await Promise.all(saved.media.slice(start, start + 12).map(file => this.verifyMedia(file)));
     const snapshot: CloudSnapshot = { format: "idea-bank-cloud", version: 1, revision: randomUUID(), parents: saved.baseRevisions, createdAt: new Date().toISOString(), library: saved.library, media: saved.media };
     const body = JSON.stringify(snapshot);
     if (Buffer.byteLength(body) > MAX_CLOUD_JSON_BYTES) throw new StorageError(413, "LIBRARY_TOO_LARGE", "Текстовое описание библиотеки превышает 3 МиБ.");
+    await this.assertLegacyWritable();
     await this.client.send(new PutObjectCommand({ Bucket: this.settings.bucket, Key: this.revisionKey(snapshot.revision, snapshot.parents), Body: body, ContentType: "application/json", ContentMD5: createHash("md5").update(body).digest("base64") }));
+    await this.assertLegacyWritable();
     const after = await this.listRevisions();
     if (after.heads.length !== 1 || after.heads[0] !== snapshot.revision) throw new StorageError(409, "CONFLICT", "Обнаружено одновременное сохранение. Обе версии сохранены.", after.heads);
     return { snapshot, heads: after.heads };
   }
 
-  private async verifyMedia(value: unknown) {
+  async verifyMedia(value: unknown) {
     const file = parseCloudMedia(value);
     let head;
     try { head = await this.client.send(new HeadObjectCommand({ Bucket: this.settings.bucket, Key: this.mediaKey(file) })); }
@@ -123,7 +126,16 @@ export class B2Storage {
     const { snapshot } = await this.readLibrary(revision);
     const file = snapshot?.media.find(item => item.id === mediaId);
     if (!file) throw new StorageError(404, "NOT_FOUND", "Вложение не найдено в этой версии.");
-    await this.verifyMedia(file);
+    return this.signDownload(file);
+  }
+
+  async assertLegacyWritable() {
+    try { await this.client.send(new HeadObjectCommand({ Bucket: this.settings.bucket, Key: `${this.prefix}/sync-v2/legacy-lock.json` })); }
+    catch (error) { if (missing(error)) return; throw error; }
+    throw new StorageError(409, "CLIENT_UPGRADE_REQUIRED", "Обнови приложение: используется новая синхронизация.");
+  }
+  async signDownload(value: CloudMedia) {
+    const file = await this.verifyMedia(value);
     const url = await getSignedUrl(this.client, new GetObjectCommand({ Bucket: this.settings.bucket, Key: this.mediaKey(file), ResponseContentDisposition: "attachment", ResponseContentType: file.mime }), { expiresIn: 300 });
     return { url, expiresIn: 300, media: file };
   }

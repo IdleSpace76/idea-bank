@@ -29,8 +29,8 @@ export function MediaGallery({ assets, pending, onRemove, onReorder, onResize }:
 
 function MediaItem({ asset, file, onRemove, reorder, onResize }: { asset: MediaAsset; file?: Blob; onRemove?: (id: string) => void; reorder?: React.ReactNode; onResize?: ResizeMedia }) {
   const { t } = useI18n();
-  const { source, error, setError } = useMediaSource(asset.id, file);
   const item = useRef<HTMLElement>(null);
+  const { source, error, setError, retry } = useMediaSource(asset.id, file,item);
   const viewport = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; width: number; height: number; original: MediaDisplaySize | undefined } | null>(null);
   const callback = useRef(onResize); callback.current = onResize;
@@ -61,7 +61,7 @@ function MediaItem({ asset, file, onRemove, reorder, onResize }: { asset: MediaA
       {asset.kind === "image" ? <a className="image-preview" href={source} target="_blank" rel="noreferrer" aria-label={t("Открыть изображение {0}", { 0: asset.name })}><img src={source} alt={asset.name} loading="lazy" onError={() => setError(t("Не удалось показать изображение. Можно скачать оригинал."))} /></a> : asset.kind === "video" ? <video src={source} controls playsInline preload="metadata" aria-label={asset.name} onError={() => setError(t("Браузер не поддерживает это видео. Можно скачать оригинал."))} /> : <audio src={source} controls preload="metadata" aria-label={asset.name} onError={() => setError(t("Браузер не поддерживает этот звук. Можно скачать оригинал."))} />}
     </> : !error && <div className="media-loading"><LoaderCircle />{t("Загрузка…")}</div>}
     </div>
-    {error && <div className="media-error"><ImageOff /><span>{t(error)}</span></div>}
+    {error && <div className="media-error"><ImageOff /><span>{t(error)}</span><button type="button" className="secondary-button" onClick={retry}>{t("Повторить загрузку")}</button></div>}
     <figcaption><span><strong>{asset.name}</strong><small>{size}</small></span><span className="media-actions">{source && <a className="icon-button" href={source} download={asset.name} aria-label={t("Скачать {0}", { 0: asset.name })}><Download /></a>}{onRemove && <button type="button" className="icon-button danger" aria-label={t("Убрать {0}", { 0: asset.name })} onClick={() => onRemove(asset.id)}><X /></button>}</span></figcaption>
     {onResize && <div className="media-size-controls"><span aria-live="off" title={t("Ширина карточки × высота области медиа")}>{measured.width} × {measured.height} px</span><button type="button" className="media-size-reset" title={t("Автоматический размер")} aria-label={t("Сбросить размер {0}", { 0: asset.name })} disabled={!asset.displaySize} onClick={() => onResize(asset.id, undefined)}><RotateCcw /></button><button type="button" className="media-resize-handle" aria-label={t("Изменить размер {0}", { 0: asset.name })} title={t("Тяни для изменения размера. Стрелки — точная настройка, Escape — отмена, двойной щелчок — сброс.")} onDoubleClick={() => onResize(asset.id, undefined)} onPointerDown={event => {
       if (event.button !== 0) return;

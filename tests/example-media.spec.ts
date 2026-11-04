@@ -30,7 +30,9 @@ test("English Example renders robot image and GLB and exports their original byt
   await page.goto("/#/project/example");
   await expect(page.getByRole("heading", { name: "Start with an idea", exact: true })).toBeVisible();
   expect(demoLibrary.sections[0].name).toBe("Examples");
+  await page.locator(".media-image").scrollIntoViewIfNeeded();
   await expect.poll(() => page.locator(".media-image img").evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(800);
+  await page.locator(".media-model").scrollIntoViewIfNeeded();
   const model = page.locator(".model-preview");
   await model.scrollIntoViewIfNeeded();
   await expect(model).toHaveAttribute("data-state", "ready", { timeout: 30000 });

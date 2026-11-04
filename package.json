@@ -15,6 +15,7 @@
     "test:auth": "node tests/auth-check.mjs",
     "test:storage": "node tests/storage-check.mjs",
     "test:sync": "node tests/cloud-sync-check.mjs",
+    "test:auto-sync": "node tests/auto-sync-check.mjs",
     "storage:cors": "node scripts/configure-b2-cors.mjs",
     "source:check": "node scripts/package-source.mjs --check",
     "source:zip": "node scripts/package-source.mjs"

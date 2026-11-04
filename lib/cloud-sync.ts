@@ -1,13 +1,14 @@
+import { readLocalRaw, readLocalSnapshot, acknowledgeUpload } from "./library-store";
 import { translate as t } from "./i18n";
 import { createMD5, createSHA256, sha256 } from "hash-wasm";
-import { createId, parseLibrary, STORAGE_KEY, type Library } from "./ideas";
+import { createId, parseLibrary, type Library } from "./ideas";
 import { libraryAssets, parseCloudSnapshot, type CloudMedia, type CloudSnapshot } from "./cloud-library";
-import { CLOUD_STATE_KEY, readCloudState, publishCloudDownload, type CloudState } from "./cloud-state";
+import { readCloudState, publishCloudDownload, type CloudState } from "./cloud-state";
 import { readMediaFile, saveMediaFiles, removeMediaFiles, projectMediaIds } from "./media-store";
 
-export type SyncPlan = { scope: string; expectedRaw: string | null; library: Library; state: CloudState | null; heads: string[]; snapshots: CloudSnapshot[]; action: "upload" | "download" | "review" | "equal"; };
+export type SyncPlan = { scope: string; expectedRaw: string | null; localRevision: number; library: Library; state: CloudState | null; heads: string[]; snapshots: CloudSnapshot[]; action: "upload" | "download" | "review" | "equal"; };
 type Progress = (message: string) => void;
-class CloudError extends Error { constructor(message: string, public code = "", public revisions: string[] = []) { super(t(message)); } }
+class CloudError extends Error { constructor(message: string, public code = "", public revisions: string[] = [], public status = -1) { super(t(message)); } }
 
 async function api(path: string, init?: RequestInit): Promise<any> {
   let response: Response;
@@ -19,8 +20,8 @@ async function api(path: string, init?: RequestInit): Promise<any> {
   return data;
 }
 const json = (method: string, body: unknown): RequestInit => ({ method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-function unchanged(plan: SyncPlan) { if (localStorage.getItem(STORAGE_KEY) !== plan.expectedRaw) throw new CloudError(t("Библиотека изменилась в другой вкладке. Повтори синхронизацию.")); }
-function signedUrl(value: unknown): string {
+async function unchanged(plan: SyncPlan) { if (await readLocalRaw() !== plan.expectedRaw) throw new CloudError(t("Библиотека изменилась в другой вкладке. Повтори синхронизацию.")); }
+export function signedUrl(value: unknown): string {
   if (typeof value !== "string") throw new CloudError(t("Не удалось получить ссылку на медиа."));
   const url = new URL(value);
   if (url.protocol !== "https:" || !/^s3\.[a-z0-9-]+\.backblazeb2\.com$/.test(url.hostname) || url.username || url.password) throw new CloudError(t("Получен неверный адрес медиа."));
@@ -38,7 +39,8 @@ export async function hashMedia(blob: Blob) {
 
 /** Compare the device baseline with every cloud head; never guess a winner for conflicts. */
 export async function inspectCloud(scope: string, library: Library): Promise<SyncPlan> {
-  const expectedRaw = localStorage.getItem(STORAGE_KEY), state = readCloudState(scope);
+  const local = await readLocalSnapshot();
+  const expectedRaw = local ? JSON.stringify(local.library) : null, state = await readCloudState(scope);
   if (expectedRaw !== null && JSON.stringify(parseLibrary(expectedRaw)) !== JSON.stringify(library)) throw new CloudError(t("В другой вкладке есть изменения. Обнови страницу перед синхронизацией."));
   let heads: string[], snapshots: CloudSnapshot[];
   try {
@@ -56,14 +58,14 @@ export async function inspectCloud(scope: string, library: Library): Promise<Syn
   let action: SyncPlan["action"] = "review";
   if (state && heads.length === 1) action = !remoteChanged ? (localChanged ? "upload" : "equal") : !localChanged ? "download" : "review";
   // A first transfer, including to an empty bucket, always requires explicit review.
-  const plan = { scope, expectedRaw, library: structuredClone(library), state, heads, snapshots, action };
-  unchanged(plan);
+  const plan = { scope, expectedRaw, localRevision: local?.revision || 0, library: structuredClone(library), state, heads, snapshots, action };
+  await unchanged(plan);
   return plan;
 }
 
 /** Upload only missing content-addressed files; publish metadata after every file succeeded. */
 export async function uploadCloud(plan: SyncPlan, progress: Progress): Promise<CloudState> {
-  unchanged(plan);
+  await unchanged(plan);
   const files: CloudMedia[] = [], assets = [...libraryAssets(plan.library).values()];
   for (const [index, asset] of assets.entries()) {
     progress(t("Проверяем и отправляем медиа {0} из {1}…", { 0: index + 1, 1: assets.length }));
@@ -79,21 +81,24 @@ export async function uploadCloud(plan: SyncPlan, progress: Progress): Promise<C
     }
     files.push(media);
   }
-  unchanged(plan); progress(t("Сохраняем библиотеку в облаке…"));
+  await unchanged(plan); progress(t("Сохраняем библиотеку в облаке…"));
   const { snapshot } = await api("library", json("PUT", { baseRevisions: plan.heads, library: plan.library, media: files }));
   const saved = parseCloudSnapshot(snapshot);
   const state: CloudState = { version: 1, scope: plan.scope, revision: saved.revision, baseline: await sha256(JSON.stringify(plan.library)), syncedAt: new Date().toISOString(), files };
   // If another tab edited while the request was in flight, its edits stay local and remain dirty.
-  localStorage.setItem(CLOUD_STATE_KEY, JSON.stringify(state));
+  await acknowledgeUpload(state, plan.localRevision, plan.library);
   return state;
 }
 
 async function downloadMedia(snapshot: CloudSnapshot, media: CloudMedia): Promise<Blob> {
   const signed = await api(`media/download?revision=${encodeURIComponent(snapshot.revision)}&id=${encodeURIComponent(media.id)}`);
+  return downloadCloudMedia(media, signed.url);
+}
+export async function downloadCloudMedia(media: CloudMedia, url: string): Promise<Blob> {
   let response: Response;
-  try { response = await fetch(signedUrl(signed.url), { credentials: "omit", signal: AbortSignal.timeout(15 * 60 * 1000) }); }
-  catch { throw new CloudError(t("Не удалось скачать медиа из B2. Проверь связь и CORS хранилища.")); }
-  if (!response.ok || !response.body) throw new CloudError(t("Облако не вернуло файл. Прежняя библиотека сохранена."));
+  try { response = await fetch(signedUrl(url), { credentials: "omit", signal: AbortSignal.timeout(15 * 60 * 1000) }); }
+  catch { throw new CloudError(t("Не удалось скачать медиа из B2. Проверь связь и CORS хранилища."),"NETWORK",[],0); }
+  if (!response.ok || !response.body) throw new CloudError(t("Облако не вернуло файл. Прежняя библиотека сохранена."),"",[],response.status);
   const [sha, md5] = await Promise.all([createSHA256(), createMD5()]); sha.init(); md5.init();
   const chunks: Uint8Array<ArrayBuffer>[] = [], reader = response.body.getReader(); let size = 0;
   try {
@@ -110,7 +115,7 @@ async function downloadMedia(snapshot: CloudSnapshot, media: CloudMedia): Promis
 
 /** Stage media under fresh local IDs; replace the device library only after all checks finish. */
 export async function downloadCloud(plan: SyncPlan, chosen: CloudSnapshot, progress: Progress): Promise<{ library: Library; state: CloudState }> {
-  unchanged(plan);
+  await unchanged(plan);
   let snapshot = chosen;
   if (plan.heads.length > 1) {
     // The explicit user choice resolves branches; other snapshots remain in history.
@@ -127,7 +132,7 @@ export async function downloadCloud(plan: SyncPlan, chosen: CloudSnapshot, progr
       blob ||= await downloadMedia(snapshot, media);
       const id = createId(); replacements.set(media.id, id); staged.push(id);
       await saveMediaFiles(new Map([[id, blob]])); files.push({ ...media, id });
-      unchanged(plan);
+      await unchanged(plan);
     }
     for (const idea of next.projects) {
       if (idea.coverImage) idea.coverImage.id = replacements.get(idea.coverImage.id)!;
@@ -135,7 +140,7 @@ export async function downloadCloud(plan: SyncPlan, chosen: CloudSnapshot, progr
     }
     const state: CloudState = { version: 1, scope: plan.scope, revision: snapshot.revision, baseline: await sha256(JSON.stringify(next)), syncedAt: new Date().toISOString(), files };
     progress(t("Сохраняем библиотеку на устройстве…"));
-    publishCloudDownload(plan.expectedRaw, JSON.stringify(next), state);
+    await publishCloudDownload(plan.expectedRaw, JSON.stringify(next), state);
     void removeMediaFiles(plan.library.projects.flatMap(projectMediaIds).filter(id => !staged.includes(id))).catch(() => {});
     return { library: next, state };
   } catch (error) {

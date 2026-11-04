@@ -1,3 +1,4 @@
+import { readStoredLibrary } from "./local-fixture";
 import { demoLibrary } from "../lib/ideas";
 import { expect, test } from "@playwright/test";
 import { STORAGE_KEY } from "../lib/ideas";
@@ -72,9 +73,10 @@ test("photos, audio, video and block widths survive reload", async ({ page }, te
   await page.reload();
   await expect(page.getByRole("heading", { name: "Визуальные и звуковые референсы" })).toBeVisible();
   await expect(page.locator(".media-item")).toHaveCount(3);
-  await page.getByRole("img", { name: "reference.png", exact: true }).scrollIntoViewIfNeeded();
+  await page.locator(".media-image").scrollIntoViewIfNeeded();
   await expect.poll(() => page.getByRole("img", { name: "reference.png", exact: true }).evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(320);
   for (const tag of ["audio", "video"]) {
+    await page.locator(`.media-${tag}`).scrollIntoViewIfNeeded();
     const player = page.locator(tag);
     await expect.poll(() => player.evaluate((el: HTMLMediaElement) => el.readyState)).toBeGreaterThanOrEqual(1);
     await player.evaluate((el: HTMLMediaElement) => el.play());
@@ -103,10 +105,7 @@ test("photos, audio, video and block widths survive reload", async ({ page }, te
   await expect(page.locator("#project-editor")).toHaveCount(0);
   await page.reload();
   await expect(page.locator(".media-item")).toHaveCount(2);
-  expect(await page.evaluate(async () => {
-    const library = JSON.parse(localStorage.getItem("idea-bank.library.v1")!);
-    return library.projects.find((p: { id: string }) => p.id === "example").blocks[2].width;
-  })).toBe("half");
+  expect((await page.evaluate(readStoredLibrary)).projects.find(p => p.id === "example")!.blocks[2].width).toBe("half");
 });
 
 test("cancelling a media draft leaves the saved project unchanged", async ({ page }) => {
@@ -120,5 +119,5 @@ test("cancelling a media draft leaves the saved project unchanged", async ({ pag
   await expect(page.locator(".content-block")).toHaveCount(2);
   const expected = structuredClone(demoLibrary);
   for (const idea of expected.projects) for (const block of idea.blocks) delete block.media;
-  expect(JSON.parse((await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY))!)).toEqual(expected);
+  expect((await page.evaluate(readStoredLibrary))).toEqual(expected);
 });

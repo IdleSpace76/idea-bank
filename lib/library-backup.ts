@@ -1,8 +1,10 @@
 import { translate as t } from "./i18n";
-import { prepareLocalSave } from "./cloud-state";
+import { readLocalSnapshot, saveLocalLibrary } from "./library-store";
 import { zip, unzip, type Zippable } from "fflate";
-import { createId, parseLibrary, STORAGE_KEY, type Library, type MediaAsset } from "./ideas";
-import { projectMediaIds, readMediaFiles, removeMediaFiles, saveMediaFiles } from "./media-store";
+import { createId, parseLibrary, type Library, type MediaAsset } from "./ideas";
+import { projectMediaIds, removeMediaFiles } from "./media-store";
+
+import { getMediaFile } from "./media-cache";
 
 export const MAX_BACKUP_BYTES = 512 * 1024 * 1024;
 const MAX_ENTRIES = 10000;
@@ -29,16 +31,15 @@ function collectAssets(library: Library): Map<string, MediaAsset> {
 }
 
 /** Exports originals with JSON metadata and SHA-256 checksums; missing files abort export. */
-export async function createLibraryBackup(library: Library): Promise<Blob> {
+export async function createLibraryBackup(library: Library, scope?: string): Promise<Blob> {
   const snapshot = parseLibrary(JSON.stringify(library));
   const assets = collectAssets(snapshot);
   const json = new TextEncoder().encode(JSON.stringify(snapshot, null, 2));
   if (assets.size > MAX_ENTRIES - 3 || json.length + [...assets.values()].reduce((sum, asset) => sum + asset.size, 0) > MAX_BACKUP_BYTES) throw new Error(t("Для одного архива поддерживается до 512 МБ данных и 9 997 медиафайлов."));
-  const files = await readMediaFiles([...assets.keys()]);
   const entries: Zippable = { "library.json": [json, { level: 6 }] };
   const manifest: Manifest = { format: "idea-bank-backup", version: 1, createdAt: new Date().toISOString(), librarySha256: await digest(json), media: [] };
   for (const [id, asset] of assets) {
-    const blob = files.get(id);
+    const blob = await getMediaFile(id,scope);
     if (!blob) throw new Error(t("Не найден файл «{0}». Полный архив не создан: восстанови файл или убери его из идеи.", { 0: asset.name }));
     if (blob.size !== asset.size) throw new Error(t("Размер файла «{0}» не совпадает с данными библиотеки. Экспорт остановлен.", { 0: asset.name }));
     const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -96,8 +97,8 @@ export async function readLibraryBackup(file: Blob): Promise<LibraryBackup> {
 
 /** Stages files under fresh IDs; metadata is switched only after the media transaction succeeds. */
 export async function restoreLibraryBackup(backup: LibraryBackup, current: Library): Promise<Library> {
-  prepareLocalSave();
-  const expected = localStorage.getItem(STORAGE_KEY);
+  const expected = await readLocalSnapshot();
+  if (expected && JSON.stringify(expected.library) !== JSON.stringify(current)) throw new Error(t("Библиотека изменилась в другой вкладке. Повтори восстановление, чтобы не потерять изменения."));
   const next = parseLibrary(JSON.stringify(backup.library));
   const oldIds = new Set(current.projects.flatMap(projectMediaIds));
   const staged = new Map<string, Blob>(), replacements = new Map<string, string>();
@@ -111,14 +112,10 @@ export async function restoreLibraryBackup(backup: LibraryBackup, current: Libra
     if (idea.coverImage) idea.coverImage.id = replacements.get(idea.coverImage.id)!;
     for (const block of idea.blocks) for (const asset of block.media || []) asset.id = replacements.get(asset.id)!;
   }
-  const concurrentChange = new Error(t("Библиотека изменилась в другой вкладке. Повтори восстановление, чтобы не потерять изменения."));
   try {
-    await saveMediaFiles(staged);
-    if (localStorage.getItem(STORAGE_KEY) !== expected) throw concurrentChange;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    await saveLocalLibrary(next, expected?.library || null, { files: staged });
   } catch (error) {
-    await removeMediaFiles([...staged.keys()]).catch(() => {});
-    throw new Error(error === concurrentChange ? concurrentChange.message : t("Не удалось записать библиотеку: проверь свободное место и разрешения браузера. Прежняя библиотека сохранена."));
+    throw new Error(t("Не удалось записать библиотеку: проверь свободное место и разрешения браузера. Прежняя библиотека сохранена."));
   }
   // Only references from the replaced library are removed; unknown/orphaned files stay untouched.
   void removeMediaFiles([...oldIds]).catch(() => {});

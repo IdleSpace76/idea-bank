@@ -15,19 +15,20 @@ function download(blob: Blob, filename: string) {
 }
 const sizeLabel = (bytes: number) => bytes < 1024 * 1024 ? t("{0} КБ", { 0: (bytes / 1024).toLocaleString(getLocale(), { maximumFractionDigits: 1 }) }) : t("{0} МБ", { 0: (bytes / (1024 * 1024)).toLocaleString(getLocale(), { maximumFractionDigits: 1 }) });
 
-export function BackupControls({ library, locked, readOnly, onBusyChange, onRestored }: { library: Library; locked: boolean; readOnly: boolean; onBusyChange: (busy: boolean) => void; onRestored: (library: Library) => void }) {
+export function BackupControls({ scope, library, locked, readOnly, onBusyChange, onRestored }: { scope?: string; library: Library; locked: boolean; readOnly: boolean; onBusyChange: (busy: boolean) => void; onRestored: (library: Library) => void }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false), [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<LibraryBackup | null>(null);
   const [examplePreview, setExamplePreview] = useState(false);
   const active = useRef(false);
+  const previewBase = useRef<Library | null>(null);
   function begin(message: string) { if (active.current || locked) return false; active.current = true; setBusy(true); onBusyChange(true); setStatus(message); setError(""); return true; }
   function finish() { active.current = false; setBusy(false); onBusyChange(false); }
   async function exportZip() {
     if (readOnly || !begin(t("Собираем библиотеку и медиа в архив…"))) return;
     try {
-      const blob = await createLibraryBackup(library), now = new Date();
+      const blob = await createLibraryBackup(library,scope), now = new Date();
       const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}`;
       download(blob, `idea-bank-${stamp}.zip`); setStatus(t("Архив подготовлен и передан браузеру для скачивания."));
     } catch (reason) { setStatus(""); setError(reason instanceof Error ? reason.message : t("Не удалось создать архив.")); }
@@ -36,6 +37,7 @@ export function BackupControls({ library, locked, readOnly, onBusyChange, onRest
   async function inspect(file: File) {
     if (!begin(t("Проверяем библиотеку, медиа и целостность архива…"))) return;
     setPreview(null);
+    previewBase.current = structuredClone(library);
     setExamplePreview(false);
     try { setPreview(await readLibraryBackup(file)); setStatus(t("Архив проверен. Текущая библиотека пока не изменена.")); }
     catch (reason) { setStatus(""); setError(reason instanceof Error ? reason.message : t("Не удалось прочитать архив.")); }
@@ -43,7 +45,7 @@ export function BackupControls({ library, locked, readOnly, onBusyChange, onRest
   }
   async function restore() {
     if (!preview || !begin(t("Восстанавливаем библиотеку и медиа…"))) return;
-    try { const next = await restoreLibraryBackup(preview, library); onRestored(next); }
+    try { const next = await restoreLibraryBackup(preview, previewBase.current || library); onRestored(next); }
     catch (reason) { setStatus(""); setError(reason instanceof Error ? reason.message : t("Не удалось восстановить библиотеку.")); }
     finally { finish(); }
   }
@@ -57,6 +59,7 @@ export function BackupControls({ library, locked, readOnly, onBusyChange, onRest
   async function previewExample() {
     if (!begin(t("Подготавливаем медиа…"))) return;
     try {
+      previewBase.current = structuredClone(library);
       const files = await loadExampleMedia();
       setPreview({ library: structuredClone(demoLibrary), files, createdAt: demoLibrary.projects[0].updatedAt, totalBytes: new TextEncoder().encode(JSON.stringify(demoLibrary)).length + [...files.values()].reduce((sum, file) => sum + file.size, 0) });
       setExamplePreview(true); setError(""); setStatus(t("Пример подготовлен. Текущая библиотека пока не изменена."));

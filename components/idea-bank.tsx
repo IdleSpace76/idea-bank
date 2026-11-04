@@ -4,7 +4,7 @@ import { LanguagePicker, useI18n } from "./language-picker";
 import { loadExampleMedia } from "@/lib/example-media";
 
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
-import { ArrowLeft, ArrowUpRight, BookOpen, Check, ChevronRight, CircleAlert, Cloud, Code2, Folder, FolderInput, Gamepad2, ImagePlus, LayoutGrid, Lightbulb, LockKeyhole, Monitor, Palette, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Rocket, Search, Trash2 } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, BookOpen, Check, ChevronRight, CircleAlert, Cloud, CloudCheck, CloudOff, RefreshCw, Code2, Folder, FolderInput, Gamepad2, ImagePlus, LayoutGrid, Lightbulb, LockKeyhole, Monitor, Palette, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Rocket, Search, Trash2 } from "lucide-react";
 import { Dialog } from "./dialog";
 import { DropdownMenu } from "./dropdown-menu";
 import { EditorActions } from "./editor-actions";
@@ -12,12 +12,16 @@ import { SidebarResizer } from "./sidebar-resizer";
 import { ThemePicker } from "./theme-picker";
 import { BackupControls } from "./backup-controls";
 import { CloudSyncControls } from "./cloud-sync-controls";
-import { prepareLocalSave } from "@/lib/cloud-state";
+import { useAutoSync } from "./use-auto-sync";
+import { syncLabel } from "@/lib/sync-controller";
+import { equal } from "@/lib/entity-sync";
+import { initializeLocalLibrary, readLocalLibrary, saveLocalLibrary, subscribeLocalChanges } from "@/lib/library-store";
 import { logout } from "@/app/auth-actions";
 import { BlockEditor, ProjectBlocks } from "./project-blocks";
 import { describeMediaFile, mediaIds, projectMediaIds, removeMediaFiles, saveMediaFiles } from "@/lib/media-store";
+import { MediaScope } from "./media-scope";
 import { useMediaSource } from "@/lib/use-media-source";
-import { coverNames, createId, demoLibrary, parseLibrary, readRoute, routeHash, STORAGE_KEY, type Cover, type Library, type MediaAsset, type Project, type Route, type Section, type SectionIcon } from "@/lib/ideas";
+import { coverNames, createId, demoLibrary, readRoute, routeHash, type Cover, type Library, type MediaAsset, type Project, type Route, type Section, type SectionIcon } from "@/lib/ideas";
 
 type Modal =
   | { type: "new-section" }
@@ -29,8 +33,9 @@ type Modal =
 const sectionIcons = { gamepad: Gamepad2, book: BookOpen, code: Code2, folder: Folder, lightbulb: Lightbulb, palette: Palette, rocket: Rocket };
 function CoverArt({ cover, small = false, image, file, title = t("Новая идея") }: { cover: Cover; small?: boolean; image?: MediaAsset; file?: Blob; title?: string }) {
   const { t } = useI18n();
-  const { source, error, setError } = useMediaSource(image?.id, file);
-  return <div aria-hidden="true" className={`cover-art cover-${cover} ${small ? "cover-small" : ""} ${image ? "cover-uploaded" : ""}`}>{image && source && !error ? <img src={source} alt="" onError={() => setError(t("Обложка недоступна"))} /> : <span>{image && error ? t("Обложка недоступна") : title}</span>}</div>;
+  const coverRef=useRef<HTMLDivElement>(null);
+  const { source, error, setError } = useMediaSource(image?.id, file,coverRef);
+  return <div ref={coverRef} aria-hidden="true" className={`cover-art cover-${cover} ${small ? "cover-small" : ""} ${image ? "cover-uploaded" : ""}`}>{image && source && !error ? <img src={source} alt="" onError={() => setError(t("Обложка недоступна"))} /> : <span>{image && error ? t("Обложка недоступна") : title}</span>}</div>;
 }
 
 function SectionSymbol({ icon }: { icon: SectionIcon }) {
@@ -49,6 +54,8 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
   const [route, setRoute] = useState<Route>({ screen: "home" });
   const [modal, setModal] = useState<Modal | null>(null);
   const [query, setQuery] = useState("");
+  const [cardLimit,setCardLimit]=useState(24);
+  const [searchLimit,setSearchLimit]=useState(24);
   const [sidebarQuery, setSidebarQuery] = useState("");
   const [draft, setDraft] = useState<Project | null>(null);
   const [message, setMessage] = useState("");
@@ -64,6 +71,8 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
   const heading = useRef<HTMLHeadingElement>(null);
   const routeRef = useRef(route);
   const dirtyRef = useRef(false);
+  const modalRef = useRef(modal);
+  modalRef.current = modal;
   const [scrollTarget, setScrollTarget] = useState<string | null>(null);
   const returnBlock = useRef<string | null>(null);
 
@@ -73,21 +82,30 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
   dirtyRef.current = dirty;
   routeRef.current = route;
 
+  const syncBlocked=!!draft || saving || importingMedia || backupBusy || (!!modal && modal.type!=="storage-info");
+  const automaticSync=useAutoSync(cloudScope,ready&&!readOnly,
+    ()=>ready&&!readOnly&&!draft&&!savingRef.current&&!importingRef.current&&!importingMedia&&!backupBusy&&(!modalRef.current||modalRef.current.type==="storage-info"),
+    next=>{
+      if(draft || dirtyRef.current || savingRef.current || (modalRef.current&&modalRef.current.type!=="storage-info"))return;
+      setLibrary(previous=>equal(previous,next)?previous:next);
+      const current=routeRef.current;
+      if(current.screen==="project"&&!next.projects.some(idea=>idea.id===current.id) || current.screen==="section"&&!next.sections.some(section=>section.id===current.id)){
+        setRoute({screen:"home"});history.replaceState(null,"","#/");
+      }
+    },syncBlocked);
+  const syncView=automaticSync.view;
+  const syncAttention=["review","conflict","migration","auth","error"].includes(syncView.phase);
+
   useEffect(() => {
     let cancelled = false;
     try { setSidebarCollapsed(localStorage.getItem("idea-bank.sidebar-collapsed") === "true"); } catch { /* Navigation remains available if browser storage is disabled. */ }
     try { const width = Number(localStorage.getItem("idea-bank.sidebar-width")); if (Number.isFinite(width) && width >= 220 && width <= 520) setSidebarWidth(Math.min(width, Math.max(220, innerWidth - 360))); } catch { /* Use the default width when storage is unavailable. */ }
     async function loadLibrary() { try {
-      prepareLocalSave();
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw !== null) {
-        try { setLibrary(parseLibrary(raw)); }
-        catch { setReadOnly(true); setStorageError(t("Не удалось прочитать сохранённую библиотеку. Исходные данные оставлены без изменений. Сейчас показан пример; редактирование отключено.")); }
-      } else {
-        try { const files = await loadExampleMedia(); if (!cancelled) await saveMediaFiles(files); }
-        catch { if (!cancelled) setStorageError(t("Не удалось загрузить медиа Example. Проверь соединение и попробуй ещё раз.")); }
-      }
-    } catch { setStorageError(t("Браузер запретил локальное хранение. Изменения будут доступны только до закрытия или обновления страницы.")); }
+      const saved = await initializeLocalLibrary(async () => ({ library: structuredClone(demoLibrary), files: await loadExampleMedia() }));
+      if (!cancelled) setLibrary(saved);
+    } catch {
+      if (!cancelled) { setReadOnly(true); setStorageError(t("Не удалось прочитать сохранённую библиотеку. Исходные данные оставлены без изменений. Сейчас показан пример; редактирование отключено.")); }
+    }
     if (!cancelled) { setRoute(readRoute(location.hash)); setReady(true); }
     }
     void loadLibrary();
@@ -125,18 +143,34 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
   }, [scrollTarget, draft]);
   useEffect(() => { if (!draft) { setPendingMedia(new Map()); setMediaError(""); } }, [draft]);
 
-  /** Saves each completed action locally; reports storage failures without losing the in-memory edit. */
-  function commit(next: Library, notice: string) {
+  useEffect(() => {
+    if (!ready) return;
+    let cancelled = false;
+    const refresh = () => {
+      if (draft || dirtyRef.current || (modalRef.current&&modalRef.current.type!=="storage-info") || savingRef.current || importingRef.current) return;
+      void readLocalLibrary().then(next => { if (!cancelled && !draft && !dirtyRef.current && (!modalRef.current||modalRef.current.type==="storage-info") && !savingRef.current) setLibrary(next); }).catch(() => {});
+    };
+    const unsubscribe = subscribeLocalChanges(refresh);
+    window.addEventListener("focus", refresh);
+    refresh();
+    return () => { cancelled = true; unsubscribe(); window.removeEventListener("focus", refresh); };
+  }, [ready, draft, modal]);
+
+  /** Publishes UI success only after the library and pending changes commit together. */
+  async function commit(next: Library, notice: string) {
     if (readOnly || savingRef.current) return false;
-    setLibrary(next);
+    savingRef.current = true; setSaving(true);
     try {
-      prepareLocalSave();
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); setStorageError(""); setMessage(notice);
+      await saveLocalLibrary(next, library);
+      setLibrary(next); setStorageError(""); setMessage(notice);
       const kept = new Set(next.projects.flatMap(projectMediaIds));
       const removed = library.projects.flatMap(projectMediaIds).filter(id => !kept.has(id));
-      void removeMediaFiles(removed).catch(() => { /* An unreferenced file can remain if storage is temporarily unavailable. */ });
+      void removeMediaFiles(removed).catch(() => {});
       return true;
-    } catch { setStorageError(t("Не удалось сохранить изменения в браузере. Они остались на странице, но могут пропасть после обновления.")); setMessage(""); return false; }
+    } catch (reason) {
+      setStorageError(reason instanceof Error ? reason.message : t("Не удалось сохранить изменения в браузере. Они остались на странице, но могут пропасть после обновления."));
+      setMessage(""); return false;
+    } finally { savingRef.current = false; setSaving(false); }
   }
 
   function navigate(next: Route) {
@@ -192,25 +226,27 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
       const referenced = new Set(mediaIds(saved.blocks));
       await saveMediaFiles(new Map([...pendingMedia].filter(([id]) => referenced.has(id))));
       savingRef.current = false;
-      if (commit({ ...library, projects: library.projects.map(p => p.id === saved.id ? saved : p) }, t("Идея и медиа сохранены в этом браузере."))) { setDraft(null); setScrollTarget(returnBlock.current); returnBlock.current = null; }
+      if (await commit({ ...library, projects: library.projects.map(p => p.id === saved.id ? saved : p) }, t("Идея и медиа сохранены в этом браузере."))) { setDraft(null); setScrollTarget(returnBlock.current); returnBlock.current = null; }
     } catch { setMediaError(t("Не удалось сохранить медиа: возможно, закончилось место или браузер запретил хранение файлов. Текст и файлы остались в редакторе — попробуй сохранить ещё раз.")); }
     finally { savingRef.current = false; setSaving(false); }
   }
 
-  function removeSection(section: Section) {
-    commit({ ...library, sections: library.sections.filter(s => s.id !== section.id), projects: library.projects.filter(p => p.sectionId !== section.id) }, t("Раздел удалён."));
+  async function removeSection(section: Section) {
+    if (!await commit({ ...library, sections: library.sections.filter(s => s.id !== section.id), projects: library.projects.filter(p => p.sectionId !== section.id) }, t("Раздел удалён."))) return;
     setModal(null);
     if (currentSection?.id === section.id) navigate({ screen: "home" });
   }
 
-  function removeProject(project: Project) {
-    commit({ ...library, projects: library.projects.filter(p => p.id !== project.id) }, t("Идея удалена."));
+  async function removeProject(project: Project) {
+    if (!await commit({ ...library, projects: library.projects.filter(p => p.id !== project.id) }, t("Идея удалена."))) return;
     setModal(null);
     if (currentProject?.id === project.id) navigate({ screen: "section", id: project.sectionId });
   }
 
   const allProjects = [...library.projects].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const visibleProjects = allProjects.filter(p => (route.screen !== "section" || p.sectionId === route.id) && `${p.name} ${p.description}`.toLocaleLowerCase("ru").includes(query.toLocaleLowerCase("ru")));
+  useEffect(()=>{setCardLimit(24);},[route.screen,route.screen === "section" ? route.id : "",query]);
+  useEffect(()=>{setSearchLimit(24);},[sidebarQuery]);
   const recentProjects = allProjects.slice(0, 4);
   const sidebarResults = sidebarQuery.trim() ? allProjects.filter(project => `${project.name} ${project.description}`.toLocaleLowerCase("ru").includes(sidebarQuery.trim().toLocaleLowerCase("ru"))) : [];
   const missing = (route.screen === "project" && !currentProject) || (route.screen === "section" && !currentSection);
@@ -229,18 +265,18 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
   }
 
   function projectCards() {
-    return <div className="project-grid">{visibleProjects.map(p => <div className="project-card-shell" key={p.id}><button className="project-card" onClick={() => navigate({ screen: "project", id: p.id })}>
+    return <><div className="project-grid">{visibleProjects.slice(0,cardLimit).map(p => <div className="project-card-shell" key={p.id}><button className="project-card" onClick={() => navigate({ screen: "project", id: p.id })}>
       <CoverArt cover={p.cover} image={p.coverImage} title={p.name} /><strong>{p.name}</strong><span className="card-description">{p.description || t("Новая идея")}</span><span className="card-category">{library.sections.find(s => s.id === p.sectionId)?.name}<ArrowUpRight /></span>
-    </button><div className="project-card-menu">{projectCardMenu(p)}</div></div>)}{!query && newProjectCard()}</div>;
+    </button><div className="project-card-menu">{projectCardMenu(p)}</div></div>)}{!query && newProjectCard()}</div>{visibleProjects.length>cardLimit && <button className="secondary-button load-more-ideas" onClick={()=>setCardLimit(value=>value+24)}>{t("Показать ещё идеи")}</button>}</>;
   }
 
-  return <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`} style={{ "--sidebar-width": sidebarWidth ? `${sidebarWidth}px` : undefined } as CSSProperties}>
+  return <MediaScope.Provider value={cloudScope}><div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`} style={{ "--sidebar-width": sidebarWidth ? `${sidebarWidth}px` : undefined } as CSSProperties}>
     <aside id="library-sidebar" className="sidebar" aria-label={t("Разделы библиотеки")} hidden={sidebarCollapsed}>
       <div className="sidebar-heading"><button className="brand" onClick={() => navigate({ screen: "home" })}><span className="brand-mark">i.</span><span className="brand-name">idea bank</span></button><button className="icon-button sidebar-toggle" type="button" aria-label={t("Свернуть боковую панель")} title={t("Свернуть боковую панель")} aria-controls="library-sidebar" aria-expanded="true" onClick={toggleSidebar}><PanelLeftClose /></button></div>
       <p className="sidebar-caption">{t("МОЕ ПРОСТРАНСТВО")}</p>
       <button className={`nav-item ${route.screen === "home" ? "selected" : ""}`} onClick={() => navigate({ screen: "home" })}><LayoutGrid /><span>{t("Все идеи")}</span><small>{library.projects.length}</small></button>
       <label className="sidebar-search idea-search"><Search /><input type="search" aria-label={t("Поиск идеи в библиотеке")} placeholder={t("Найти идею")} value={sidebarQuery} onChange={e => setSidebarQuery(e.target.value)} /></label>
-      {sidebarQuery.trim() && <div className="sidebar-search-results" aria-label={t("Результаты поиска")}><p className="sidebar-search-count" role="status">{t("Найдено: ")}{sidebarResults.length}</p><ul>{sidebarResults.map(project => <li key={project.id}><button onClick={() => navigate({ screen: "project", id: project.id })}><strong>{project.name}</strong><small>{library.sections.find(section => section.id === project.sectionId)?.name}</small></button></li>)}</ul></div>}
+      {sidebarQuery.trim() && <div className="sidebar-search-results" aria-label={t("Результаты поиска")}><p className="sidebar-search-count" role="status">{t("Найдено: ")}{sidebarResults.length}</p><ul>{sidebarResults.slice(0,searchLimit).map(project => <li key={project.id}><button onClick={() => navigate({ screen: "project", id: project.id })}><strong>{project.name}</strong><small>{library.sections.find(section => section.id === project.sectionId)?.name}</small></button></li>)}</ul>{sidebarResults.length>searchLimit && <button className="back-button" onClick={()=>setSearchLimit(value=>value+24)}>{t("Показать ещё")}</button>}</div>}
       <div className="sidebar-label"><span>{t("Мои разделы")}</span><button className="icon-button" aria-label={t("Создать раздел")} disabled={!ready || readOnly} onClick={() => setModal({ type: "new-section" })}><Plus /></button></div>
       <nav aria-label={t("Разделы и идеи")}>{library.sections.map(s => {
         const projects = allProjects.filter(project => project.sectionId === s.id);
@@ -257,7 +293,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
 
     <div className="workspace">
       <header className="topbar"><button aria-label="Idea Bank" className="brand mobile-brand" onClick={() => navigate({ screen: "home" })}><span className="brand-mark">i.</span><span className="brand-name">idea bank</span></button><div className="topbar-navigation">{sidebarCollapsed && <button className="icon-button sidebar-toggle" type="button" aria-label={t("Развернуть боковую панель")} title={t("Развернуть боковую панель")} aria-controls="library-sidebar" aria-expanded="false" onClick={toggleSidebar}><PanelLeftOpen /></button>}<nav className="breadcrumbs" aria-label={t("Путь к идее")}><button onClick={() => navigate({ screen: "home" })} aria-current={route.screen === "home" ? "page" : undefined}>{t("Библиотека")}</button>{currentSection && <><ChevronRight /><button onClick={() => navigate({ screen: "section", id: currentSection.id })} aria-current={route.screen === "section" ? "page" : undefined}>{currentSection.name}</button></>}{currentProject && <><ChevronRight /><button onClick={() => navigate({ screen: "project", id: currentProject.id })} aria-current="page">{currentProject.name}</button></>}</nav></div>
-        <div className="topbar-actions"><LanguagePicker /><ThemePicker /><button aria-label={cloudScope ? t("Синхронизация") : t("На этом устройстве")} title={cloudScope ? t("Синхронизация") : t("На этом устройстве")} className={`local-status ${storageError ? "has-warning" : ""}`} onClick={() => setModal({ type: "storage-info" })}>{storageError ? <CircleAlert /> : cloudScope ? <Cloud /> : <Monitor />}<span>{cloudScope ? t("Синхронизация") : t("На этом устройстве")}</span></button>{account && <form action={logout} onSubmit={event => { if (saving || importingMedia || backupBusy || (dirtyRef.current && !window.confirm(t("Выйти без сохранения изменений?")))) event.preventDefault(); }}><button type="submit" className="secondary-button account-logout" title={t("Выполнен вход: {0}", { 0: account })} disabled={saving || importingMedia || backupBusy}>{t("Выйти")}</button></form>}</div>
+        <div className="topbar-actions"><LanguagePicker /><ThemePicker /><button aria-label={cloudScope ? `${t("Синхронизация")}: ${t(syncLabel(syncView.phase))}` : t("На этом устройстве")} title={cloudScope ? t(syncView.error||syncView.status||syncLabel(syncView.phase)) : t("На этом устройстве")} data-sync-phase={cloudScope?syncView.phase:undefined} className={`local-status ${storageError||syncAttention ? "has-warning" : ""}`} onClick={() => setModal({ type: "storage-info" })}>{storageError||syncAttention ? <CircleAlert /> : cloudScope ? syncView.busy ? <RefreshCw className="sync-spinning" /> : syncView.phase==="synced" ? <CloudCheck /> : syncView.phase==="offline" ? <CloudOff /> : <Cloud /> : <Monitor />}<span>{cloudScope ? t(syncLabel(syncView.phase)) : t("На этом устройстве")}</span></button>{account && <form action={logout} onSubmit={event => { if (saving || importingMedia || backupBusy || (dirtyRef.current && !window.confirm(t("Выйти без сохранения изменений?")))) event.preventDefault(); }}><button type="submit" className="secondary-button account-logout" title={t("Выполнен вход: {0}", { 0: account })} disabled={saving || importingMedia || backupBusy}>{t("Выйти")}</button></form>}</div>
       </header>
 
       {storageError && <div className="storage-warning" role="alert"><CircleAlert /><p>{t(storageError)}</p></div>}
@@ -294,31 +330,29 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
     </div>
 
     {modal && <Dialog title={modalTitle(modal)} closeDisabled={backupBusy} onClose={() => { if (!savingRef.current) setModal(null); }}>
-      {modal.type === "new-section" || modal.type === "edit-section" ? <SectionForm section={modal.type === "edit-section" ? modal.section : undefined} onCancel={() => setModal(null)} onSave={values => {
+      {modal.type === "new-section" || modal.type === "edit-section" ? <SectionForm section={modal.type === "edit-section" ? modal.section : undefined} onCancel={() => setModal(null)} onSave={async values => {
         const section: Section = modal.type === "edit-section" ? { ...modal.section, ...values } : { id: createId(), ...values };
-        commit({ ...library, sections: modal.type === "edit-section" ? library.sections.map(s => s.id === section.id ? section : s) : [...library.sections, section] }, modal.type === "edit-section" ? t("Раздел обновлён.") : t("Раздел создан.")); setModal(null);
+        const success = await commit({ ...library, sections: modal.type === "edit-section" ? library.sections.map(s => s.id === section.id ? section : s) : [...library.sections, section] }, modal.type === "edit-section" ? t("Раздел обновлён.") : t("Раздел создан.")); if (success) setModal(null); return success;
       }} /> : modal.type === "new-project" || modal.type === "edit-project" ? <ProjectForm sections={library.sections} initialSectionId={modal.type === "new-project" ? modal.sectionId : modal.project.sectionId} project={modal.type === "edit-project" ? modal.project : undefined} onCancel={() => setModal(null)} onSave={async (values, coverFile) => {
         const project: Project = modal.type === "edit-project" ? { ...modal.project, ...values, updatedAt: new Date().toISOString() } : { id: createId(), ...values, blocks: [], updatedAt: new Date().toISOString() };
         savingRef.current = true;
         try {
         if (coverFile && project.coverImage) await saveMediaFiles(new Map([[project.coverImage.id, coverFile]]));
         savingRef.current = false;
-        const success = commit({ ...library, projects: modal.type === "edit-project" ? library.projects.map(p => p.id === project.id ? project : p) : [...library.projects, project] }, t("Идея сохранена в этом браузере."));
+        const success = await commit({ ...library, projects: modal.type === "edit-project" ? library.projects.map(p => p.id === project.id ? project : p) : [...library.projects, project] }, t("Идея сохранена в этом браузере."));
         if (success) { setModal(null); if (modal.type === "new-project") navigate({ screen: "project", id: project.id }); }
         return success;
         } finally { savingRef.current = false; }
       }} />
       : modal.type === "delete-section" ? <><p className="dialog-description">{t("Удалить «")}{modal.section.name}{t("»? Вместе с разделом будут удалены все его идеи (")}{projectCount(modal.section.id)}{t("). Это действие нельзя отменить.")}</p><div className="form-actions"><button className="secondary-button" onClick={() => setModal(null)}>{t("Отмена")}</button><button className="danger-button" onClick={() => removeSection(modal.section)}>{t("Удалить раздел")}</button></div></>
       : modal.type === "delete-project" ? <><p className="dialog-description">{t("Удалить «")}{modal.project.name}{t("» и все её текстовые блоки? Это действие нельзя отменить.")}</p><div className="form-actions"><button className="secondary-button" onClick={() => setModal(null)}>{t("Отмена")}</button><button className="danger-button" onClick={() => removeProject(modal.project)}>{t("Удалить идею")}</button></div></>
-      : modal.type === "move-project" ? <div className="menu-options">{library.sections.map(s => <button disabled={s.id === modal.project.sectionId} key={s.id} onClick={() => { const moved = { ...modal.project, sectionId: s.id, updatedAt: new Date().toISOString() }; commit({ ...library, projects: library.projects.map(p => p.id === moved.id ? moved : p) }, t("Идея перенесена.")); setModal(null); }}><SectionSymbol icon={s.icon} /><span>{s.name}</span>{s.id === modal.project.sectionId && <Check />}</button>)}</div>
-      : <><div className="storage-info-icon"><Monitor /></div><p className="dialog-description">{t("Изменения и медиа сохраняются в текущем браузере на этом устройстве. Для переноса на другое устройство используй синхронизацию, если облако подключено, или ZIP-копию.")}</p><p className="dialog-description">{t("Облачное подключение доступно после входа владельца и настройки B2. Очистка данных сайта в браузере удалит локальную библиотеку и вложения.")}</p>{cloudScope && <CloudSyncControls scope={cloudScope} library={library} locked={!!draft || importingMedia || backupBusy} readOnly={readOnly} onBusyChange={busy => { savingRef.current = busy; setBackupBusy(busy); }} onDownloaded={next => {
-        setLibrary(next); setStorageError(""); setDraft(null); setPendingMedia(new Map()); setMediaError(""); setQuery(""); setSidebarQuery(""); setExpandedSections({}); setRoute({ screen: "home" }); history.replaceState(null, "", "#/"); setMessage(t("Библиотека и медиа получены из облака."));
-      }} />}<BackupControls library={library} locked={!!draft || importingMedia || backupBusy} readOnly={readOnly} onBusyChange={busy => { savingRef.current = busy; setBackupBusy(busy); }} onRestored={next => {
+      : modal.type === "move-project" ? <div className="menu-options">{library.sections.map(s => <button disabled={s.id === modal.project.sectionId} key={s.id} onClick={async () => { const moved = { ...modal.project, sectionId: s.id, updatedAt: new Date().toISOString() }; if (await commit({ ...library, projects: library.projects.map(p => p.id === moved.id ? moved : p) }, t("Идея перенесена."))) setModal(null); }}><SectionSymbol icon={s.icon} /><span>{s.name}</span>{s.id === modal.project.sectionId && <Check />}</button>)}</div>
+      : <><div className="storage-info-icon"><Monitor /></div><p className="dialog-description">{t("Изменения сохраняются на устройстве и автоматически отправляются в подключённое облако. ZIP-копия позволяет сохранить отдельный архив библиотеки.")}</p><p className="dialog-description">{t("Облачное подключение доступно после входа владельца и настройки B2. Очистка данных сайта в браузере удалит локальную библиотеку и вложения.")}</p>{automaticSync.controller && <CloudSyncControls controller={automaticSync.controller} view={syncView} library={library} locked={!!draft || importingMedia || backupBusy || saving} readOnly={readOnly} />}<BackupControls scope={cloudScope} library={library} locked={!!draft || importingMedia || backupBusy || syncView.busy} readOnly={readOnly} onBusyChange={busy => { savingRef.current = busy; setBackupBusy(busy); }} onRestored={next => {
         setLibrary(next); setReadOnly(false); setStorageError(""); setDraft(null); setPendingMedia(new Map()); setMediaError(""); setQuery(""); setSidebarQuery(""); setExpandedSections({});
         setRoute({ screen: "home" }); history.replaceState(null, "", "#/"); setModal(null); setMessage(t("Библиотека и медиа восстановлены из архива.")); window.scrollTo({ top: 0, behavior: "instant" });
       }} /><button className="primary-button full-width" disabled={backupBusy} onClick={() => setModal(null)}>{t("Понятно")}</button></>}
     </Dialog>}
-  </div>;
+  </div></MediaScope.Provider>;
 }
 
 function modalTitle(modal: Modal): string {
@@ -334,16 +368,17 @@ function modalTitle(modal: Modal): string {
   }
 }
 
-function SectionForm({ section, onSave, onCancel }: { section?: Section; onSave: (values: Pick<Section, "name" | "description" | "icon">) => void; onCancel: () => void }) {
+function SectionForm({ section, onSave, onCancel }: { section?: Section; onSave: (values: Pick<Section, "name" | "description" | "icon">) => Promise<boolean>; onCancel: () => void }) {
   const { t } = useI18n();
   const [name, setName] = useState(section?.name || "");
   const [description, setDescription] = useState(section?.description || "");
   const [icon, setIcon] = useState<SectionIcon>(section?.icon || "folder");
-  return <form className="section-form" onSubmit={e => { e.preventDefault(); if (name.trim()) onSave({ name: name.trim(), description: description.trim(), icon }); }}>
+  const [submitting, setSubmitting] = useState(false);
+  return <form className="section-form" onSubmit={async e => { e.preventDefault(); if (!name.trim() || submitting) return; setSubmitting(true); try { await onSave({ name: name.trim(), description: description.trim(), icon }); } finally { setSubmitting(false); } }}><fieldset disabled={submitting}>
     <label className="field-label" htmlFor="section-name">{t("Название")}</label><input autoFocus id="section-name" required maxLength={70} pattern=".*\S.*" value={name} placeholder={t("Например, Gamedev")} onChange={e => setName(e.target.value)} />
     <label className="field-label" htmlFor="section-description">{t("Описание ")}<span>{t("необязательно")}</span></label><textarea id="section-description" rows={2} maxLength={300} value={description} placeholder={t("Какие идеи будут здесь жить?")} onChange={e => setDescription(e.target.value)} />
     <fieldset className="icon-picker"><legend>{t("Значок раздела")}</legend>{(Object.keys(sectionIcons) as SectionIcon[]).map(value => <button type="button" className={`icon-button ${icon === value ? "chosen" : ""}`} key={value} aria-label={{ gamepad: t("Игры"), book: t("Обучение"), code: t("Программирование"), folder: t("Папка"), lightbulb: t("Идеи"), palette: t("Творчество"), rocket: t("Ракета") }[value]} aria-pressed={icon === value} onClick={() => setIcon(value)}><SectionSymbol icon={value} /></button>)}</fieldset>
-    <div className="form-actions"><button className="secondary-button" type="button" onClick={onCancel}>{t("Отмена")}</button><button className="primary-button" type="submit">{section ? t("Сохранить") : t("Создать раздел")}</button></div>
+    <div className="form-actions"><button className="secondary-button" type="button" onClick={onCancel}>{t("Отмена")}</button><button className="primary-button" type="submit">{section ? t("Сохранить") : t("Создать раздел")}</button></div></fieldset>
   </form>;
 }
 

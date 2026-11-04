@@ -1,3 +1,4 @@
+import { readStoredLibrary } from "./local-fixture";
 import { expect, test } from "@playwright/test";
 
 test("idea card actions confirm deletion and the trailing add card works on home and section", async ({ page, isMobile }) => {
@@ -45,10 +46,8 @@ test("card menu moves an idea and the section add button uses the current sectio
   await page.getByLabel("Название", { exact: true }).fill("Вторая идея в архиве");
   await page.getByRole("button", { name: "Создать идею", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Вторая идея в архиве", exact: true })).toBeVisible();
-  const sectionName = await page.evaluate(() => {
-    const library = JSON.parse(localStorage.getItem("idea-bank.library.v1")!);
-    const idea = library.projects.find((idea: { name: string }) => idea.name === "Вторая идея в архиве");
-    return library.sections.find((section: { id: string }) => section.id === idea.sectionId).name;
-  });
+  const library = await page.evaluate(readStoredLibrary);
+  const idea = library.projects.find(idea => idea.name === "Вторая идея в архиве")!;
+  const sectionName = library.sections.find(section => section.id === idea.sectionId)!.name;
   expect(sectionName).toBe("Архив");
 });

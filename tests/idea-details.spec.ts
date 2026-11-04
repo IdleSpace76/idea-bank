@@ -1,3 +1,4 @@
+import { readStoredLibrary } from "./local-fixture";
 import { expect, test } from "@playwright/test";
 import { demoLibrary, STORAGE_KEY } from "../lib/ideas";
 
@@ -12,7 +13,7 @@ test("idea details and block content are edited independently", async ({ page })
   await dialog.getByRole("button", { name: "Космос", exact: true }).click();
   await dialog.getByRole("button", { name: "Сохранить", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Отдельные настройки идеи", exact: true })).toBeVisible();
-  let saved = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).projects[0], STORAGE_KEY);
+  let saved = (await page.evaluate(readStoredLibrary)).projects[0];
   expect(saved.blocks).toEqual(demoLibrary.projects[0].blocks);
   expect(saved.cover).toBe("orbit");
   await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
@@ -24,7 +25,7 @@ test("idea details and block content are edited independently", async ({ page })
   await page.getByRole("button", { name: "Сохранить идею", exact: true }).click();
   await page.reload();
   await expect(page.getByRole("heading", { name: "Изменён только блок", exact: true })).toBeVisible();
-  saved = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).projects[0], STORAGE_KEY);
+  saved = (await page.evaluate(readStoredLibrary)).projects[0];
   expect(saved.name).toBe("Отдельные настройки идеи"); expect(saved.description).toBe("Описание отдельно от блоков"); expect(saved.cover).toBe("orbit");
 });
 
@@ -40,11 +41,11 @@ test("card edit changes a cover without opening the idea and cancellation preser
   await dialog.getByRole("button", { name: "Сохранить", exact: true }).click();
   await expect(dialog).toHaveCount(0);
   expect(new URL(page.url()).hash).not.toContain("project");
-  const saved = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).projects[0], STORAGE_KEY);
-  expect(saved.coverImage.name).toBe("updated-cover.png"); expect(saved.blocks).toEqual(demoLibrary.projects[0].blocks);
+  const saved = (await page.evaluate(readStoredLibrary)).projects[0];
+  expect(saved.coverImage!.name).toBe("updated-cover.png"); expect(saved.blocks).toEqual(demoLibrary.projects[0].blocks);
   await page.getByRole("button", { name: "Действия с идеей Example", exact: true }).click();
   await page.getByRole("menuitem", { name: "Изменить", exact: true }).click();
   await dialog.getByLabel("Название", { exact: true }).fill("Не сохранять");
   await dialog.getByRole("button", { name: "Отмена", exact: true }).click();
-  expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).projects[0].name, STORAGE_KEY)).toBe("Example");
+  expect((await page.evaluate(readStoredLibrary)).projects[0].name).toBe("Example");
 });

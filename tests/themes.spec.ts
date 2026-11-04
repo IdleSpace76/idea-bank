@@ -1,3 +1,4 @@
+import { readStoredLibrary } from "./local-fixture";
 import { expect, test } from "@playwright/test";
 import { THEME_KEY, themes } from "../lib/themes";
 import { STORAGE_KEY } from "../lib/ideas";
@@ -7,12 +8,12 @@ test("themes persist across reload and keep a project draft intact", async ({ pa
   await page.goto("/#/project/example");
   await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
   await page.getByLabel("Заголовок блока", { exact: true }).first().fill("Черновик с новой темой");
-  const before = await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY);
+  const before = JSON.stringify(await page.evaluate(readStoredLibrary));
   for (const theme of themes) {
     await page.getByRole("button", { name: "Тема оформления", exact: true }).click();
     await page.getByRole("button", { name: theme.name, exact: true }).click();
     await expect(page.getByLabel("Заголовок блока", { exact: true }).first()).toHaveValue("Черновик с новой темой");
-    expect(await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY)).toBe(before);
+    expect(JSON.stringify(await page.evaluate(readStoredLibrary))).toBe(before);
     expect(await page.evaluate(key => localStorage.getItem(key), THEME_KEY)).toBe(theme.id);
     const contrast = await page.evaluate(() => {
       const luminance = (color: string) => color.match(/[\d.]+/g)!.slice(0, 3).map(Number).map(value => { const channel = value / 255; return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4; }).reduce((sum, value, i) => sum + value * [.2126, .7152, .0722][i], 0);

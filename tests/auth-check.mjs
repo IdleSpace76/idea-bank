@@ -61,6 +61,12 @@ await withServer("github", async origin => {
     assert.ok(response.headers.get("cache-control").includes("no-store"));
     assert.equal((await fetch(`${origin}/api/storage/${path}`, { method, headers: { Cookie: await sessionCookie("67890") } })).status, 401, "Other accounts cannot access storage");
   }
+  for (const [path,method] of [["sync","GET"],["sync","POST"],["sync","PUT"],["sync/media","GET"]]) {
+    const response=await fetch(`${origin}/api/${path}`,{method}); assert.equal(response.status,401);
+    assert.equal((await fetch(`${origin}/api/${path}`,{method,headers:{Cookie:await sessionCookie("67890")}})).status,401);
+    if(method!=="GET")assert.equal((await fetch(`${origin}/api/${path}`,{method,headers:{Cookie:ownerCookie,Origin:"https://other.example","Content-Type":"application/json"},body:"{}"})).status,403);
+  }
+  for(const method of ["POST","PUT"])assert.equal((await fetch(`${origin}/api/sync`,{method,headers:{Cookie:ownerCookie,Origin:origin,"Content-Type":"application/json"},body:"{}"})).status,400);
   const write = (path, body, extra = {}) => fetch(`${origin}/api/storage/${path}`, { method: path === "library" ? "PUT" : "POST", headers: { Cookie: ownerCookie, Origin: origin, "Content-Type": "application/json", ...extra }, body });
   assert.equal((await write("library", "{}", { Origin: "https://example.org" })).status, 403, "Foreign origin is denied before storage access");
   assert.equal((await write("library", "{}", { "sec-fetch-site": "cross-site" })).status, 403);

@@ -1,74 +1,31 @@
 import { translate as t } from "./i18n";
 import type { MediaAsset, MediaKind, Project } from "./ideas";
+import { cacheKey, type CacheState } from "./media-cache-store";
+import { request, transaction } from "./local-database";
 
-const DB_NAME = "idea-bank.media.v1";
-const STORE = "files";
-
-function openMediaDatabase(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(STORE);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error(t("Медиахранилище недоступно")));
-    request.onblocked = () => reject(new Error(t("Закрой другие вкладки приложения и повтори сохранение.")));
-  });
-}
-
-/** Stores original binary files in one transaction before their metadata is saved. */
 export async function saveMediaFiles(files: ReadonlyMap<string, Blob>): Promise<void> {
   if (!files.size) return;
-  const db = await openMediaDatabase();
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE, "readwrite");
-      tx.oncomplete = () => resolve();
-      tx.onerror = tx.onabort = () => reject(tx.error || new Error(t("Не удалось сохранить медиа")));
-      files.forEach((file, id) => tx.objectStore(STORE).put(file, id));
-    });
-  } finally { db.close(); }
+  await transaction(["meta","media"], "readwrite", async tx => {
+    const entries:CacheState=await request(tx.objectStore("meta").get(cacheKey))||{};
+    for (const [id, blob] of files) { tx.objectStore("media").put(blob, id); delete entries[id]; }
+    tx.objectStore("meta").put(entries,cacheKey);
+  });
 }
-
-export async function readMediaFile(id: string): Promise<Blob | undefined> {
-  const db = await openMediaDatabase();
-  try {
-    return await new Promise<Blob | undefined>((resolve, reject) => {
-      const request = db.transaction(STORE, "readonly").objectStore(STORE).get(id);
-      request.onsuccess = () => resolve(request.result instanceof Blob ? request.result : undefined);
-      request.onerror = () => reject(request.error);
-    });
-  } finally { db.close(); }
-}
-
-/** Reads one consistent media snapshot for a library export. */
+export const readMediaFile = (id: string): Promise<Blob | undefined> => transaction(["media"], "readonly", tx => request(tx.objectStore("media").get(id)));
 export async function readMediaFiles(ids: string[]): Promise<Map<string, Blob>> {
-  if (!ids.length) return new Map();
-  const db = await openMediaDatabase();
-  try {
-    return await new Promise((resolve, reject) => {
-      const files = new Map<string, Blob>();
-      const tx = db.transaction(STORE, "readonly"), store = tx.objectStore(STORE);
-      for (const id of ids) {
-        const request = store.get(id);
-        request.onsuccess = () => { if (request.result instanceof Blob) files.set(id, request.result); };
-      }
-      tx.oncomplete = () => resolve(files);
-      tx.onerror = tx.onabort = () => reject(tx.error || new Error(t("Не удалось прочитать медиа для экспорта.")));
-    });
-  } finally { db.close(); }
+  return transaction(["media"], "readonly", async tx => {
+    const values = await Promise.all(ids.map(id => request<Blob | undefined>(tx.objectStore("media").get(id))));
+    return new Map(ids.flatMap((id, index) => values[index] ? [[id, values[index]!] as const] : []));
+  });
 }
-
-/** Only removes files whose references have already been removed from the saved library. */
 export async function removeMediaFiles(ids: string[]): Promise<void> {
   if (!ids.length) return;
-  const db = await openMediaDatabase();
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE, "readwrite");
-      tx.oncomplete = () => resolve();
-      tx.onerror = tx.onabort = () => reject(tx.error || new Error(t("Не удалось удалить медиа")));
-      ids.forEach(id => tx.objectStore(STORE).delete(id));
-    });
-  } finally { db.close(); }
+  await transaction(["meta", "ideas", "blocks", "media"], "readwrite", async tx => {
+    const ideas = await request<{ value: Project }[]>(tx.objectStore("ideas").getAll());
+    const blocks = await request<{ media?: MediaAsset[] }[]>(tx.objectStore("blocks").getAll());
+    const used = new Set([...ideas.flatMap(p => p.value.coverImage ? [p.value.coverImage.id] : []), ...blocks.flatMap(b => (b.media || []).map(m => m.id))]);
+    for (const id of ids) if (!used.has(id)) tx.objectStore("media").delete(id);
+  });
 }
 
 export function describeMediaFile(file: File): MediaAsset | null {

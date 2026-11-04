@@ -1,3 +1,4 @@
+import { deleteLocalDatabase, readStoredLibrary, setStoredLibrary } from "./local-fixture";
 import { expect, test, type Page } from "@playwright/test";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -18,22 +19,25 @@ function archive(library: Library, media = new Map([["shared-image", pixel]])) {
 async function seed(page: Page, library: Library, media: { id: string; mime: string; base64: string }[]) {
   await page.goto("/");
   await expect(page.locator("main h1")).toBeVisible();
+  await page.evaluate(deleteLocalDatabase);
   await page.evaluate(async ({ library, media, key }) => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open("idea-bank.media.v1", 1); request.onupgradeneeded = () => request.result.createObjectStore("files"); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
     await new Promise<void>((resolve, reject) => { const tx = db.transaction("files", "readwrite"); tx.objectStore("files").clear(); for (const file of media) tx.objectStore("files").put(new Blob([Uint8Array.from(atob(file.base64), char => char.charCodeAt(0))], { type: file.mime }), file.id); tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); });
     db.close(); localStorage.setItem(key, JSON.stringify(library));
   }, { library, media, key: STORAGE_KEY });
   await page.reload();
+  await expect(page.locator(".project-card > strong")).toHaveText(library.projects.map(p => p.name));
 }
 async function snapshot(page: Page) {
-  return page.evaluate(async key => {
-    const raw = localStorage.getItem(key);
-    const db = await new Promise<IDBDatabase>(resolve => { const request = indexedDB.open("idea-bank.media.v1", 1); request.onupgradeneeded = () => request.result.createObjectStore("files"); request.onsuccess = () => resolve(request.result); });
-    const rows = await new Promise<{ keys: IDBValidKey[]; files: Blob[] }>(resolve => { const tx = db.transaction("files", "readonly"), store = tx.objectStore("files"), keys = store.getAllKeys(), files = store.getAll(); tx.oncomplete = () => resolve({ keys: keys.result, files: files.result }); });
+  const library = await page.evaluate(readStoredLibrary);
+  return page.evaluate(async library => {
+    const raw = JSON.stringify(library);
+    const db = await new Promise<IDBDatabase>(resolve => { const request = indexedDB.open("idea-bank.local", 1); request.onsuccess = () => resolve(request.result); });
+    const rows = await new Promise<{ keys: IDBValidKey[]; files: Blob[] }>(resolve => { const tx = db.transaction("media", "readonly"), store = tx.objectStore("media"), keys = store.getAllKeys(), files = store.getAll(); tx.oncomplete = () => resolve({ keys: keys.result, files: files.result }); });
     db.close();
     const files = await Promise.all(rows.files.map(async (file, i) => ({ id: rows.keys[i], size: file.size, hash: Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", await file.arrayBuffer()))).map(n => n.toString(16).padStart(2, "0")).join("") })));
     return { raw, files };
-  }, STORAGE_KEY);
+  }, library);
 }
 async function openBackups(page: Page) { await page.getByRole("button", { name: "Локальная версия", exact: true }).click(); await expect(page.getByRole("heading", { name: "Резервная копия", exact: true })).toBeVisible(); }
 async function inspect(page: Page, bytes: Buffer) { await page.getByLabel("Выбрать архив библиотеки", { exact: true }).setInputFiles({ name: "library.zip", mimeType: "application/zip", buffer: bytes }); }
@@ -85,8 +89,10 @@ test("a ZIP transfers covers, rich text, layout and every media kind to a clean 
     expect(idea.blocks[0].media.map((asset: MediaAsset) => asset.displaySize)).toEqual(assets.map(asset => asset.displaySize));
     await target.goto(`${new URL("/", page.url()).href}#/project/example`);
     await expect(target.locator(".block-prose strong")).toHaveText("Важная идея");
+    await target.locator(".media-image").scrollIntoViewIfNeeded();
     await expect.poll(() => target.locator(".media-image img").evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(160);
-    for (const tag of ["audio", "video"]) await expect.poll(() => target.locator(tag).evaluate((el: HTMLMediaElement) => el.readyState)).toBeGreaterThanOrEqual(1);
+    for (const tag of ["audio", "video"]) { await target.locator(`.media-${tag}`).scrollIntoViewIfNeeded(); await expect.poll(() => target.locator(tag).evaluate((el: HTMLMediaElement) => el.readyState)).toBeGreaterThanOrEqual(1); }
+    await target.locator(".media-model").scrollIntoViewIfNeeded();
     const model = target.locator(".model-preview"); await model.scrollIntoViewIfNeeded(); await expect(model).toHaveAttribute("data-state", "ready", { timeout: 30000 });
     expect(await target.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   } finally { await targetContext.close(); }
@@ -115,7 +121,7 @@ test("media and metadata write failures preserve old files even when imported ID
     await page.evaluate(({ failure, key }) => {
       const state = window as unknown as { restorePatch?: () => void };
       if (failure === "media") { const put = IDBObjectStore.prototype.put; IDBObjectStore.prototype.put = function () { throw new DOMException("Disk full", "QuotaExceededError"); }; state.restorePatch = () => { IDBObjectStore.prototype.put = put; }; }
-      else { const set = Storage.prototype.setItem; Storage.prototype.setItem = function (name, value) { if (name === key) throw new DOMException("Disk full", "QuotaExceededError"); return set.call(this, name, value); }; state.restorePatch = () => { Storage.prototype.setItem = set; }; }
+      else { const put = IDBObjectStore.prototype.put; IDBObjectStore.prototype.put = function (...args: Parameters<IDBObjectStore["put"]>) { if (this.name === "ideas") throw new DOMException("Disk full", "QuotaExceededError"); return put.apply(this, args); }; state.restorePatch = () => { IDBObjectStore.prototype.put = put; }; }
     }, { failure, key: STORAGE_KEY });
     await page.getByRole("button", { name: "Заменить библиотеку", exact: true }).click();
     await expect(page.locator(".backup-error")).toContainText("Прежняя библиотека сохранена");
@@ -137,7 +143,7 @@ test("missing media abort export and unsaved editing locks backup controls", asy
 });
 
 test("incompatible raw data can be downloaded before explicit recovery", async ({ page }) => {
-  await page.goto("/"); await page.evaluate(key => localStorage.setItem(key, '{"version":99,"saved":"keep me"}'), STORAGE_KEY); await page.reload();
+  await page.goto("/"); await expect(page.locator("main h1")).toBeVisible(); await page.evaluate(deleteLocalDatabase); await page.evaluate(key => localStorage.setItem(key, '{"version":99,"saved":"keep me"}'), STORAGE_KEY); await page.reload();
   await openBackups(page);
   await expect(page.getByRole("button", { name: "Экспортировать ZIP", exact: true })).toBeDisabled();
   const downloaded = page.waitForEvent("download"); await page.getByRole("button", { name: "скачать исходные данные", exact: true }).click();
@@ -154,10 +160,7 @@ test("a library changed during staging is preserved instead of overwritten", asy
   const library = smallLibrary(); await seed(page, library, [{ id: "shared-image", mime: "image/png", base64: pixel.toString("base64") }]);
   const before = await snapshot(page), changed = structuredClone(library); changed.projects[0].name = "Изменения из другой вкладки";
   await openBackups(page); await inspect(page, archive(library).bytes); await expect(page.locator(".backup-preview")).toBeVisible();
-  await page.evaluate(({ changed, key }) => {
-    const put = IDBObjectStore.prototype.put;
-    IDBObjectStore.prototype.put = function (...args: Parameters<IDBObjectStore["put"]>) { localStorage.setItem(key, JSON.stringify(changed)); return put.apply(this, args); };
-  }, { changed, key: STORAGE_KEY });
+  await setStoredLibrary(page, changed);
   await page.getByRole("button", { name: "Заменить библиотеку", exact: true }).click(); await expect(page.locator(".backup-error")).toContainText("другой вкладке");
   const after = await snapshot(page); expect(JSON.parse(after.raw!)).toEqual(changed); expect(after.files).toEqual(before.files);
 });

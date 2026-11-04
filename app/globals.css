@@ -285,7 +285,7 @@ legend { font-size: 12px; color: var(--muted); padding: 0; }
 .dialog:has(.section-form) .dialog-header h2 { font-size: 24px; }
 .section-form .field-label, .section-form .icon-picker legend { font-size: 15px; font-weight: 500; color: var(--text); }
 .section-form .field-label > span { font-size: 12px; }
-.section-form > input:focus, .section-form > textarea:focus,
+.section-form > fieldset > input:focus, .section-form > fieldset > textarea:focus,
 .project-form > fieldset > input:focus, .project-form > fieldset > textarea:focus { outline: none; border-color: var(--green); box-shadow: none; }
 .section-form .form-actions > button { font-size: 14px; }
 .project-form .field-label, .project-form .cover-picker legend { font-size: 15px; font-weight: 500; color: var(--text); }
@@ -548,7 +548,7 @@ fieldset:disabled .media-upload { opacity: .5; }
   .new-project-card { border-radius: 15px; font-size: 16px; }
   .projects-area { margin-top: 24px; }
   .home-projects { margin-top: 30px; }
-  .home-projects .project-grid { display: none; }
+  .home-projects .project-grid, .home-projects .load-more-ideas { display: none; }
   .home-projects .projects-toolbar { margin-bottom: 0; }
   .projects-toolbar { font-size: 13px; margin-bottom: 18px; }
   .search-field input { font-size: 16px; min-width: 0; }
@@ -682,3 +682,10 @@ body.is-sidebar-resizing, body.is-sidebar-resizing * { cursor: col-resize !impor
 @media (max-width: 760px) {
   .project-toolbar { --project-action-gap: 4px; margin-right: 0; }
 }
+
+.sync-conflict-details { margin-top: 12px; font-size: 14px; }
+.sync-conflict-details summary { cursor: pointer; color: var(--green); padding: 8px 0; }
+.sync-version-body { max-height: 320px; overflow: auto; overflow-wrap: anywhere; margin-top: 10px; padding: 12px; border: 1px solid var(--block-border); border-radius: 10px; }
+.sync-version-body > p { white-space: pre-wrap; }
+
+.load-more-ideas { margin-top: 24px; }

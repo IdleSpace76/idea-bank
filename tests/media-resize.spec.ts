@@ -1,3 +1,4 @@
+import { readStoredLibrary } from "./local-fixture";
 import { demoLibrary } from "../lib/ideas";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { STORAGE_KEY } from "../lib/ideas";
@@ -54,8 +55,8 @@ test("individual media sizes persist and rows follow the tallest item", async ({
   await page.reload(); await expect(cards).toHaveCount(4);
   for (let i = 0; i < 4; i++) await expect(cards.nth(i).locator(".media-viewport")).toHaveCSS("height", `${heights[i]}px`);
   await checkRows();
-  const saved = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!), STORAGE_KEY);
-  expect(saved.projects[0].blocks[0].media.map((asset: { displaySize: unknown }) => asset.displaySize)).toEqual(heights.map(height => ({ width, height })));
+  const saved = await page.evaluate(readStoredLibrary);
+  expect(saved.projects[0].blocks[0].media!.map(asset => asset.displaySize)).toEqual(heights.map(height => ({ width, height })));
   await page.screenshot({ path: info.outputPath("independent-sizes.png"), fullPage: true });
   await page.setViewportSize({ width: 320, height: 900 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -91,5 +92,5 @@ test("media resize supports keyboard, drag cancellation and automatic reset", as
   await expect(page.locator(".media-item")).toHaveCount(0);
   const expected = structuredClone(demoLibrary);
   for (const idea of expected.projects) for (const block of idea.blocks) delete block.media;
-  expect(JSON.parse((await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY))!)).toEqual(expected);
+  expect((await page.evaluate(readStoredLibrary))).toEqual(expected);
 });

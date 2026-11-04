@@ -1,3 +1,4 @@
+import { readStoredLibrary } from "./local-fixture";
 import { expect, test } from "@playwright/test";
 import { demoLibrary, parseLibrary, STORAGE_KEY } from "../lib/ideas";
 import { normalizeRichText, plainTextDocument, richTextToPlain, safeLink } from "../lib/rich-text";
@@ -76,7 +77,7 @@ test("text position, inline code and old unedited text persist", async ({ page }
   const card = page.locator(".content-block").first();
   await expect(card.locator(".block-prose code")).toHaveText("const idea = 1;");
   expect(await card.evaluate(el => !!(el.querySelector(".block-prose")!.compareDocumentPosition(el.querySelector(".media-gallery")!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
-  const saved = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!), STORAGE_KEY);
+  const saved = await page.evaluate(readStoredLibrary);
   expect(saved.projects[0].blocks[1]).toEqual(demoLibrary.projects[0].blocks[1]);
   await page.getByRole("button", { name: "Редактировать блок 1", exact: true }).click();
   await block.getByLabel("Положение текста блока 1").selectOption("below");

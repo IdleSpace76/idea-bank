@@ -1,0 +1,30 @@
+import assert from "node:assert/strict";
+import { schema,client } from "./entity-fixture.mjs";
+const { entityKey,flattenLibrary,assembleLibrary }=schema;
+const { resolvePlan }=client;
+const baseline={version:1,sections:[{id:"s",name:"S",description:"",icon:"folder"}],projects:[{id:"a",sectionId:"s",name:"A",description:"",cover:"forest",updatedAt:"2026-01-01T00:00:00Z",blocks:[{id:"one",heading:"One",text:"Base"},{id:"two",heading:"Two",text:"Base"}]}]};
+const base=flattenLibrary(baseline);
+const plan=(local,remote,variants=Object.fromEntries(Object.entries(remote).map(([k,v])=>[k,[v]])))=>({base,local,remote,variants,read:{heads:[],index:Object.fromEntries(Object.keys(remote).map(k=>[k,["v"]])),records:[]}});
+let a=structuredClone(baseline), b=structuredClone(baseline);
+a.projects[0].blocks[0].text="Device A";b.projects[0].blocks[1].text="Device B";
+let result=resolvePlan(plan(flattenLibrary(a),flattenLibrary(b)));
+assert.equal(result.conflicts.length,0);assert.deepEqual(assembleLibrary(result.values).projects[0].blocks.map(b=>b.text),["Device A","Device B"]);
+a.projects[0].blocks[1].text="A second";
+result=resolvePlan(plan(flattenLibrary(a),flattenLibrary(b)));assert.equal(result.conflicts.length,1);
+const key=entityKey("block","a","two");result=resolvePlan(plan(flattenLibrary(a),flattenLibrary(b)),{[key]:0});assert.equal(result.conflicts.length,0);assert.equal(result.values[key].text,"A second");
+const deleted=structuredClone(baseline);deleted.projects=[];
+const deleting=plan(flattenLibrary(a),flattenLibrary(deleted));
+result=resolvePlan(deleting);assert.ok(result.conflicts.some(c=>c.key===entityKey("idea","a")&&c.structural));
+result=resolvePlan(deleting,{[entityKey("idea","a")]:0});assert.equal(result.conflicts.length,0);assert.equal(assembleLibrary(result.values).projects.length,1);
+result=resolvePlan(deleting,{[entityKey("idea","a")]:1});assert.equal(result.conflicts.length,0);assert.equal(assembleLibrary(result.values).projects.length,0);
+// A device checkpoint equal to one concurrent head must not discard the other head.
+const forkPlan=plan(flattenLibrary(a),flattenLibrary(b));forkPlan.base=flattenLibrary(a);forkPlan.variants[key]=[flattenLibrary(a)[key],flattenLibrary(b)[key]];
+assert.ok(resolvePlan(forkPlan).conflicts.some(c=>c.key===key));
+// Rich text and its plain-text representation merge as one unit.
+const rich=structuredClone(baseline);rich.projects[0].blocks[0].richText={type:"doc",content:[{type:"paragraph",content:[{type:"text",text:"Rich"}]}]};rich.projects[0].blocks[0].text="Rich";
+const plain=structuredClone(baseline);plain.projects[0].blocks[0].text="Plain";
+assert.ok(resolvePlan(plan(flattenLibrary(rich),flattenLibrary(plain))).conflicts.some(c=>c.key===entityKey("block","a","one")));
+console.log("Entity merge checks passed: independent blocks, explicit conflicts, deletion versus edit, concurrent cloud heads and rich-text consistency.");
+const addedA=structuredClone(baseline),addedB=structuredClone(baseline);
+addedA.projects.push({...structuredClone(addedA.projects[0]),id:"new-a"});addedB.projects.push({...structuredClone(addedB.projects[0]),id:"new-b"});
+const added=resolvePlan(plan(flattenLibrary(addedA),flattenLibrary(addedB)));assert.equal(added.conflicts.length,0);assert.equal(assembleLibrary(added.values).projects.length,3);
