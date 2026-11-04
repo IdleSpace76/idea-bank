@@ -4,7 +4,7 @@ import { LanguagePicker, useI18n } from "./language-picker";
 import { loadExampleMedia } from "@/lib/example-media";
 
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
-import { ArrowLeft, ArrowUpRight, BookOpen, Check, ChevronRight, CircleAlert, Cloud, CloudCheck, CloudOff, RefreshCw, Code2, Folder, FolderInput, Gamepad2, ImagePlus, LayoutGrid, Lightbulb, LockKeyhole, Monitor, Palette, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Rocket, Search, Trash2 } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, BookOpen, Check, ChevronRight, CircleAlert, Code2, Folder, FolderInput, Gamepad2, ImagePlus, LayoutGrid, Lightbulb, LockKeyhole, Monitor, Palette, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Rocket, Search, Trash2 } from "lucide-react";
 import { Dialog } from "./dialog";
 import { DropdownMenu } from "./dropdown-menu";
 import { EditorActions } from "./editor-actions";
@@ -13,7 +13,7 @@ import { ThemePicker } from "./theme-picker";
 import { BackupControls } from "./backup-controls";
 import { CloudSyncControls } from "./cloud-sync-controls";
 import { useAutoSync } from "./use-auto-sync";
-import { syncLabel } from "@/lib/sync-controller";
+import { SyncStatus } from "./sync-status";
 import { equal } from "@/lib/entity-sync";
 import { initializeLocalLibrary, readLocalLibrary, saveLocalLibrary, subscribeLocalChanges } from "@/lib/library-store";
 import { logout } from "@/app/auth-actions";
@@ -293,7 +293,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
 
     <div className="workspace">
       <header className="topbar"><button aria-label="Idea Bank" className="brand mobile-brand" onClick={() => navigate({ screen: "home" })}><span className="brand-mark">i.</span><span className="brand-name">idea bank</span></button><div className="topbar-navigation">{sidebarCollapsed && <button className="icon-button sidebar-toggle" type="button" aria-label={t("Развернуть боковую панель")} title={t("Развернуть боковую панель")} aria-controls="library-sidebar" aria-expanded="false" onClick={toggleSidebar}><PanelLeftOpen /></button>}<nav className="breadcrumbs" aria-label={t("Путь к идее")}><button onClick={() => navigate({ screen: "home" })} aria-current={route.screen === "home" ? "page" : undefined}>{t("Библиотека")}</button>{currentSection && <><ChevronRight /><button onClick={() => navigate({ screen: "section", id: currentSection.id })} aria-current={route.screen === "section" ? "page" : undefined}>{currentSection.name}</button></>}{currentProject && <><ChevronRight /><button onClick={() => navigate({ screen: "project", id: currentProject.id })} aria-current="page">{currentProject.name}</button></>}</nav></div>
-        <div className="topbar-actions"><LanguagePicker /><ThemePicker /><button aria-label={cloudScope ? `${t("Синхронизация")}: ${t(syncLabel(syncView.phase))}` : t("На этом устройстве")} title={cloudScope ? t(syncView.error||syncView.status||syncLabel(syncView.phase)) : t("На этом устройстве")} data-sync-phase={cloudScope?syncView.phase:undefined} className={`local-status ${storageError||syncAttention ? "has-warning" : ""}`} onClick={() => setModal({ type: "storage-info" })}>{storageError||syncAttention ? <CircleAlert /> : cloudScope ? syncView.busy ? <RefreshCw className="sync-spinning" /> : syncView.phase==="synced" ? <CloudCheck /> : syncView.phase==="offline" ? <CloudOff /> : <Cloud /> : <Monitor />}<span>{cloudScope ? t(syncLabel(syncView.phase)) : t("На этом устройстве")}</span></button>{account && <form action={logout} onSubmit={event => { if (saving || importingMedia || backupBusy || (dirtyRef.current && !window.confirm(t("Выйти без сохранения изменений?")))) event.preventDefault(); }}><button type="submit" className="secondary-button account-logout" title={t("Выполнен вход: {0}", { 0: account })} disabled={saving || importingMedia || backupBusy}>{t("Выйти")}</button></form>}</div>
+        <div className="topbar-actions"><LanguagePicker /><ThemePicker /><SyncStatus cloud={!!cloudScope} view={syncView} warning={!!storageError || syncAttention} onClick={() => setModal({ type: "storage-info" })} />{account && <form action={logout} onSubmit={event => { if (saving || importingMedia || backupBusy || (dirtyRef.current && !window.confirm(t("Выйти без сохранения изменений?")))) event.preventDefault(); }}><button type="submit" className="secondary-button account-logout" title={t("Выполнен вход: {0}", { 0: account })} disabled={saving || importingMedia || backupBusy}>{t("Выйти")}</button></form>}</div>
       </header>
 
       {storageError && <div className="storage-warning" role="alert"><CircleAlert /><p>{t(storageError)}</p></div>}
