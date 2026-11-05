@@ -1,5 +1,10 @@
 /** Interface text only. Never pass user-created content through this dictionary. */
 export const english: Record<string, string> = {
+  "Облако недоступно": "Cloud unavailable",
+  "Облако недоступно · сохранённая версия": "Cloud unavailable · saved version",
+  "Облако недоступно. Повторим запрос позже.": "Cloud unavailable. We will retry later.",
+  "B2 отклонил запрос: проверьте лимиты операций и права ключа. Автоматические запросы приостановлены на пять минут.": "B2 denied the request: check operation limits and key permissions. Automatic requests are paused for five minutes.",
+  "Нет связи с облаком. Локальные изменения сохранены.": "Cannot reach the cloud. Local changes are saved.",
   "Перед добавлением или редактированием блоков восстановите либо удалите предыдущий черновик.": "Restore or delete the previous draft before adding or editing blocks.",
   "Черновик изменён в другой вкладке. Сохранённая копия не перезаписана.": "The draft changed in another tab. The saved copy was not overwritten.",
   "Не удалось прочитать локальный черновик. Его данные оставлены без изменений.": "Could not read the local draft. Its data was left unchanged.",

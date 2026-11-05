@@ -5,10 +5,10 @@ import { equal, type SyncCheckpoint } from "./entity-sync";
 import { withSyncLock } from "./sync-lock";
 import { SyncEventsClient } from "./sync-events-client";
 
-export type SyncPhase = "waiting" | "syncing" | "synced" | "offline" | "retry" | "review" | "conflict" | "migration" | "auth" | "error";
+export type SyncPhase = "waiting" | "syncing" | "synced" | "offline" | "unavailable" | "retry" | "review" | "conflict" | "migration" | "auth" | "error";
 export type SyncView = { phase: SyncPhase; busy: boolean; status: string; error: string; lastSync: string; plan: EntityPlan | null; nextRetry: number | null };
 export const initialSyncView: SyncView = {phase:"waiting",busy:false,status:"",error:"",lastSync:"",plan:null,nextRetry:null};
-export const syncLabel = (phase: SyncPhase): string => ({waiting:"Ожидает отправки",syncing:"Синхронизация…",synced:"Сохранено в облаке",offline:"Нет сети",retry:"Повторим автоматически",review:"Нужна настройка",conflict:"Есть конфликт",migration:"Нужен переход",auth:"Нужно войти",error:"Ошибка синхронизации"})[phase];
+export const syncLabel = (phase: SyncPhase): string => ({waiting:"Ожидает отправки",syncing:"Синхронизация…",synced:"Сохранено в облаке",offline:"Нет сети",unavailable:"Облако недоступно",retry:"Повторим автоматически",review:"Нужна настройка",conflict:"Есть конфликт",migration:"Нужен переход",auth:"Нужно войти",error:"Ошибка синхронизации"})[phase];
 const safetyPollMs=600000, fallbackPollMs=60000, debounceMs=1200, wakeThrottleMs=2000;
 const retryDelays=[2000,5000,10000,30000,60000,120000,300000];
 const paused = new Set<SyncPhase>(["review","conflict","migration","auth","error"]);

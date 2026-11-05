@@ -51,9 +51,12 @@ export async function storageEndpoint(request: Request, mutation: boolean, run: 
     try { return Response.json(await run(storage), { headers: { ...noStore, Vary: "Cookie" } }); }
     finally { storage.client.destroy(); }
   } catch (error) {
-    const problem = error instanceof StorageError ? error : new StorageError(502, "STORAGE_UNAVAILABLE", "Не удалось обратиться к B2. Повтори запрос позже.");
+    const denied = (error as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata?.httpStatusCode === 403;
+    const problem = error instanceof StorageError ? error : denied
+      ? new StorageError(503, "STORAGE_ACCESS_DENIED", "B2 отклонил запрос: проверьте лимиты операций и права ключа. Автоматические запросы приостановлены на пять минут.")
+      : new StorageError(502, "STORAGE_UNAVAILABLE", "Не удалось обратиться к B2. Повтори запрос позже.");
     if (problem.status >= 500) logStorageFailure(error, problem);
     // Do not expose SDK errors: they can contain signed URLs, request headers and account details.
-    return Response.json({ error: { code: problem.code, message: problem.message, ...(problem.revisions ? { revisions: problem.revisions } : {}) } }, { status: problem.status, headers: { ...noStore, Vary: "Cookie" } });
+    return Response.json({ error: { code: problem.code, message: problem.message, ...(problem.revisions ? { revisions: problem.revisions } : {}) } }, { status: problem.status, headers: { ...noStore, Vary: "Cookie", ...(problem.code === "STORAGE_ACCESS_DENIED" ? { "Retry-After": "300" } : {}) } });
   }
 }

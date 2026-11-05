@@ -7,23 +7,30 @@ import type { SyncTarget,ScopedRead } from "./scoped-types";
 import { noteScopedDeletion,observeScopedAlive,scopedReadCounter,readScopedDeletions } from "./scoped-store";
 import { flattenLibrary } from "./entity-sync";
 import type { IdeaEditVersions } from "./scoped-types";
+import { cloudFetch, CloudAccessError } from "./cloud-access";
 
-export type ReaderPage = { sections: Section[]; ideas: IdeaSummary[]; total: number; counts: Record<string,number>; revision: string; nextCursor: string | null; offline: boolean; uninitialized: boolean };
-export type ReaderIdea = { idea: Project; version: string; offline: boolean; editBase?:ScopedRead };
+export type ReaderPage = { sections: Section[]; ideas: IdeaSummary[]; total: number; counts: Record<string,number>; revision: string; nextCursor: string | null; offline: boolean; uninitialized: boolean; cloudError?: string };
+export type ReaderIdea = { idea: Project; version: string; offline: boolean; editBase?:ScopedRead; cloudError?: string };
 export type ReaderQuery = { query?: string; sectionId?: string; cursor?: string; limit?: number };
 export class ReaderError extends Error { constructor(public code: string, message: string,public target?:SyncTarget) { super(message); } }
 const unavailable = () => new ReaderError("OFFLINE","Для открытия этой идеи нужно подключение к интернету");
 const fallback = (error: unknown) => error instanceof TypeError || error instanceof DOMException && ["TimeoutError","NetworkError"].includes(error.name) || error instanceof ReaderError && error.code === "UNAVAILABLE";
 
-async function get(path: string, headers?: HeadersInit) {
+async function get(scope: string, path: string, headers: HeadersInit | undefined, generation: number) {
   if (navigator.onLine === false) throw new TypeError("Offline");
-  const response = await fetch(path,{headers,credentials:"same-origin",cache:"no-store",signal:AbortSignal.timeout(65000)});
+  let response: Response;
+  try { response = await cloudFetch(path,{headers,credentials:"same-origin",cache:"no-store",signal:AbortSignal.timeout(65000)},JSON.stringify([scope,generation])); }
+  catch(error) { if(error instanceof CloudAccessError && error.status)throw new ReaderError("UNAVAILABLE",error.message);throw error instanceof CloudAccessError ? new TypeError(error.message) : error; }
   if (response.status === 304) return response;
   if (!response.ok) {
     const data = await response.json().catch(() => null);
     throw new ReaderError(response.status >= 500 ? "UNAVAILABLE" : data?.error?.code || "READ_FAILED",data?.error?.message || "Не удалось загрузить данные. Повторите попытку.");
   }
   return response;
+}
+function cachedState(error: unknown) {
+  const server = error instanceof ReaderError && error.code === "UNAVAILABLE" && navigator.onLine !== false;
+  return {offline:!server,cloudError:server ? error.message : undefined};
 }
 function checkedIdea(value: unknown): Project {
   const idea = value as Project;
@@ -66,24 +73,26 @@ export async function loadReaderPage(scope: string | undefined, options: ReaderQ
   const key = params.toString();
   try {
     const started=await scopedReadCounter();
-    const result = checkedPage(await (await get(`/api/catalog?${key}`)).json());
+    const result = checkedPage(await (await get(scope,`/api/catalog?${key}`,undefined,started)).json());
     await observeScopedAlive(scope,result.ideas.map(idea=>idea.id),result.sections.map(section=>section.id),started);
     await writeReaderCache(scope,"page",key,result).catch(() => {});
     return overlayPage(scope,result,options);
   } catch (error) {
     if (!fallback(error)) throw error;
     const saved = await readReaderCache<ReaderPage>(scope,"page",key).catch(() => undefined);
-    if (saved) return overlayPage(scope,{...saved,offline:true},options);
+    const status = cachedState(error);
+    if (saved) return overlayPage(scope,{...saved,...status},options);
     if ((!options.cursor || options.cursor.startsWith("{")) && (await readMeta<{scope:string}>("sync-v2"))?.scope===scope) {
-      const local=await loadReaderPage(undefined,options);return overlayPage(scope,{...local,offline:true},options);
+      const local=await loadReaderPage(undefined,options);return overlayPage(scope,{...local,...status},options);
     }
     if(!options.cursor) {
       const navigation=await readReaderCache<ReaderPage>(scope,"page","limit=24").catch(()=>undefined);
       if(navigation) {
         const ideas=navigation.ideas.filter(idea=>(!options.sectionId || idea.sectionId===options.sectionId) && (!options.query || `${idea.name}\n${idea.description}`.toLowerCase().includes(options.query.trim().toLowerCase())));
-        return overlayPage(scope,{...navigation,ideas,total:ideas.length,nextCursor:null,offline:true},options);
+        return overlayPage(scope,{...navigation,ideas,total:ideas.length,nextCursor:null,...status},options);
       }
     }
+    if(status.cloudError)throw error;
     throw new ReaderError("OFFLINE","Нет сохранённых данных для этой страницы. Подключитесь к интернету.");
   }
 }
@@ -106,7 +115,7 @@ export async function loadReaderIdea(scope: string | undefined, id: string, onCa
   if(saved && !(pending && "deleted" in pending))onCached?.({...saved,offline:navigator.onLine===false});
   try {
     const started=await scopedReadCounter();
-    const response = await get(`/api/ideas/${encodeURIComponent(id)}`,saved?.editBase && saved.version!=="local" ? {"If-None-Match":`"${saved.version}"`} : undefined);
+    const response = await get(scope,`/api/ideas/${encodeURIComponent(id)}`,saved?.editBase && saved.version!=="local" ? {"If-None-Match":`"${saved.version}"`} : undefined,started);
     if (response.status === 304) {
       if (!saved) throw new ReaderError("INVALID_DATA","Некорректный ответ облака.");
       await observeScopedAlive(scope,[id],[saved.idea.sectionId],started);
@@ -128,7 +137,8 @@ export async function loadReaderIdea(scope: string | undefined, id: string, onCa
     if(error instanceof ReaderError && error.code==="IDEA_CONFLICT")error.target={kind:"idea",id};
     if (!fallback(error)) throw error;
     if(pending && "deleted" in pending)throw new ReaderError("NOT_FOUND","Идея не найдена.");
-    if (!saved) throw unavailable();
-    return {...saved,offline:true};
+    const status = cachedState(error);
+    if (!saved) {if(status.cloudError)throw error;throw unavailable();}
+    return {...saved,...status};
   }
 }

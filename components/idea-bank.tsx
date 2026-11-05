@@ -119,9 +119,9 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
     ()=>ready&&!readOnly&&!draft&&(bridgeRef.current || !savingRef.current&&!importingRef.current&&!importingMedia&&!backupBusy&&(!modalRef.current||modalRef.current.type==="storage-info")),
     ()=>reader.refresh(),syncBlocked);
   const reading=reader.main.loading || !!reader.detail?.loading;
-  const readError=reader.main.error || reader.detail?.error || "";
-  const syncView=legacySession ? automaticSync.view : {...scoped.view,busy:scoped.view.busy || reading,phase:reader.authRequired?"auth" as const:["conflict","auth","retry","error"].includes(scoped.view.phase)?scoped.view.phase:reader.offline?"offline" as const:reading||scoped.view.busy?"syncing" as const:readError?"error" as const:scoped.view.phase,error:scoped.view.error || readError};
-  const syncAttention=["review","conflict","migration","auth","error"].includes(syncView.phase);
+  const readError=reader.cloudError || reader.main.error || reader.detail?.error || "";
+  const syncView=legacySession ? automaticSync.view : {...scoped.view,busy:scoped.view.busy || reading,phase:reader.authRequired?"auth" as const:["conflict","auth","retry","error","unavailable"].includes(scoped.view.phase)?scoped.view.phase:reader.offline?"offline" as const:reader.cloudError?"unavailable" as const:reading||scoped.view.busy?"syncing" as const:readError?"error" as const:scoped.view.phase,error:scoped.view.error || readError};
+  const syncAttention=["review","conflict","migration","auth","error","unavailable"].includes(syncView.phase);
 
   useEffect(()=>{
     const target=loadMoreTarget.current;
@@ -473,6 +473,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
 
       {storageError && <div className="storage-warning" role="alert"><CircleAlert /><p>{t(storageError)}</p></div>}
       {cloudScope && (!reader.online || reader.offline) && <div className="offline-status" role="status">{t("Офлайн · сохранённая версия")}</div>}
+      {cloudScope && reader.online && !reader.offline && reader.cloudError && <div className="offline-status" role="status">{t(reader.main.page || reader.detail?.idea ? "Облако недоступно · сохранённая версия" : "Облако недоступно")}</div>}
       {!ready ? <main className="page-content loading"><span className="eyebrow">IDEA BANK</span><h1>{t("Открываем библиотеку…")}</h1></main> : <main className={`page-content ${route.screen === "project" ? "project-page" : route.screen === "section" ? "section-page" : "library-page"}`}>
         {route.screen==="project" && !draft && blockDraft.recovery && <section className="draft-recovery" aria-label={t("Локальный черновик")}>
           <div><strong>{t("Есть несохранённый черновик")}</strong><p>{t("Черновик хранится только на этом устройстве. Восстановить его для редактирования?")}</p></div>

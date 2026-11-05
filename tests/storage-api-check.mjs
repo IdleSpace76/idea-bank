@@ -24,9 +24,10 @@ const failure = Object.assign(new Error(secret), {
   $response: { headers: { authorization: secret } }, stack: secret,
 });
 let response = await exports.storageEndpoint(request, false, async () => { throw failure; });
-assert.equal(response.status, 502);
-assert.equal((await response.json()).error.code, "STORAGE_UNAVAILABLE");
-assert.deepEqual(JSON.parse(JSON.stringify(logs[0][1])), { code: "STORAGE_UNAVAILABLE", status: 502, errorType: "AccessDenied", upstreamStatus: 403 });
+assert.equal(response.status, 503);
+assert.equal(response.headers.get("Retry-After"), "300");
+assert.equal((await response.json()).error.code, "STORAGE_ACCESS_DENIED");
+assert.deepEqual(JSON.parse(JSON.stringify(logs[0][1])), { code: "STORAGE_ACCESS_DENIED", status: 503, errorType: "AccessDenied", upstreamStatus: 403 });
 
 await exports.storageEndpoint(request, false, async () => { throw Object.assign(new Error(secret), { name: secret, code: secret, $metadata: { httpStatusCode: secret } }); });
 assert.equal(logs[1][1].errorType, "OtherError");

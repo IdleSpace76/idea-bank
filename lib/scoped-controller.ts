@@ -6,6 +6,7 @@ import { queueScoped,readScopedEntry,readScopedIndex,subscribeScoped } from "./s
 import type { SyncChoices,EntityPlan } from "./entity-client";
 import type { SyncTarget } from "./scoped-types";
 import { markReaderStale } from "./reader-cache";
+import { cloudBackoffRemaining,retryCloudAccess } from "./cloud-access";
 type Options={canRun:()=>boolean;refresh:()=>void};
 /** Flush one durable edit domain at a time; events invalidate reads instead of downloading bodies. */
 export class ScopedSyncController {
@@ -19,7 +20,7 @@ export class ScopedSyncController {
   subscribe=(listener:()=>void)=>{this.listeners.add(listener);return()=>{this.listeners.delete(listener);};};
   getSnapshot=()=>this.view;
   private patch(value:Partial<SyncView>){this.view={...this.view,...value};for(const listener of this.listeners)listener();}
-  private schedule(delay:number,invalidate=false){if(this.stopped || document.visibilityState==="hidden")return;if(this.timer)clearTimeout(this.timer);this.timer=setTimeout(()=>{this.timer=null;if(invalidate)this.refreshPending=true;void this.check(false,undefined,true);},delay);}
+  private schedule(delay:number,invalidate=false){if(this.stopped || document.visibilityState==="hidden")return;if(this.timer)clearTimeout(this.timer);this.timer=setTimeout(()=>{this.timer=null;if(invalidate)this.refreshPending=true;void this.check(false,undefined,true);},Math.max(delay,cloudBackoffRemaining()));}
   private refresh(){if(this.options.canRun()){this.refreshPending=false;this.options.refresh();}else this.refreshPending=true;}
   start(){
     if(!this.stopped)return;this.stopped=false;this.generation++;
@@ -50,6 +51,8 @@ export class ScopedSyncController {
   check=async(_activate=false,resolution?:{plan:ScopedPlan;choices:SyncChoices},automatic=false)=>{
     if(this.stopped || this.running)return;
     if(navigator.onLine===false){this.patch({phase:"offline"});return;}
+    if(automatic && cloudBackoffRemaining()){this.schedule(cloudBackoffRemaining(),true);return;}
+    if(!automatic)retryCloudAccess();
     if(!this.options.canRun()){this.refreshPending=true;this.schedule(2000);return;}
     if(automatic && !resolution && ["conflict","auth","error"].includes(this.view.phase))return;
     if(!automatic)this.refreshPending=true;
@@ -83,7 +86,7 @@ export class ScopedSyncController {
         if(error instanceof ScopedError && error.code==="SYNC_PAUSED"){this.patch({phase:"waiting"});this.schedule(1200);return;}
         const auth=error instanceof ScopedError && error.status===401;
         const fatal=error instanceof ScopedError && [400,413,415,422].includes(error.status);
-        this.patch({phase:auth?"auth":fatal?"error":"retry",error:error instanceof Error?error.message:"Не удалось выполнить облачный запрос."});
+        this.patch({phase:auth?"auth":fatal?"error":error instanceof ScopedError && error.code==="STORAGE_ACCESS_DENIED"?"unavailable":"retry",error:error instanceof Error?error.message:"Не удалось выполнить облачный запрос."});
         if(!auth&&!fatal)this.schedule([2000,5000,10000,30000,60000,120000,300000][Math.min(this.failures++,6)]);
       }
     }finally{this.running=false;if(!this.stopped && generation===this.generation)this.patch({busy:false});}

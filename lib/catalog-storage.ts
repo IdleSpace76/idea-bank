@@ -5,6 +5,7 @@ import { entityKey, equal, keyParts, stable, type EntityIndex } from "./entity-s
 import { parseLibrary, summarizeIdea, type IdeaSummary, type Project, type Section, type TextBlock } from "./ideas";
 import type { EntityStorage } from "./entity-storage";
 import type { IdeaEditVersions } from "./scoped-types";
+import { cachedStorageRead } from "./storage-read-cache";
 
 type IdeaMetadata = IdeaSummary & { blockIds: string[] };
 export type CatalogCard = { id: string; version: string; variants: (IdeaSummary | null)[]; conflicted: boolean };
@@ -25,13 +26,16 @@ export class CatalogStorage {
   readonly prefix: string;
   constructor(private readonly entities: EntityStorage) { this.prefix = `${entities.prefix}/catalog-v1`; }
   private get storage() { return this.entities.storage; }
-  private async get(key: string): Promise<unknown | null> {
+  private async get(key: string, cache = true): Promise<unknown | null> {
+    if (cache && key.startsWith(`${this.prefix}/objects/`)) return cachedStorageRead(this.storage,key,()=>this.get(key,false));
     try {
       const object = await this.storage.client.send(new GetObjectCommand({ Bucket: this.storage.settings.bucket, Key: key }));
       if (!object.Body || !object.ContentLength || object.ContentLength > MAX_CLOUD_JSON_BYTES) throw new StorageError(502, "INVALID_CATALOG", "Индекс библиотеки повреждён.");
       const text = await object.Body.transformToString();
       if (Buffer.byteLength(text) > MAX_CLOUD_JSON_BYTES) throw new StorageError(502, "INVALID_CATALOG", "Индекс библиотеки повреждён.");
-      return JSON.parse(text);
+      const value = JSON.parse(text);
+      if (key.startsWith(`${this.prefix}/objects/`) && hash(value) !== key.slice(`${this.prefix}/objects/`.length).replace(/\.json$/, "")) throw new StorageError(502, "INVALID_CATALOG", "Индекс библиотеки повреждён.");
+      return value;
     } catch (error) { if (missing(error)) return null; throw error; }
   }
   private async exists(key: string) {
@@ -41,7 +45,7 @@ export class CatalogStorage {
   private async put(key: string, value: unknown) {
     const body = stable(value);
     if (Buffer.byteLength(body) > MAX_CLOUD_JSON_BYTES) throw new StorageError(413, "CATALOG_TOO_LARGE", "Запись индекса превышает 3 МиБ.");
-    const existing = await this.get(key);
+    const existing = await this.get(key,false);
     if (existing !== null) {
       if (!equal(existing, value)) throw new StorageError(502, "INVALID_CATALOG", "Индекс библиотеки повреждён.");
       return;
@@ -103,11 +107,13 @@ export class CatalogStorage {
       if (!tips.length) throw new StorageError(409, "CATALOG_BUSY", "Библиотека обновляется. Повтори запрос.");
     }
     const key = `${this.prefix}/views/${hash(["reader-2",tips])}.json`;
-    const saved = await this.get(key) as { root?: string } | null;
-    if (saved) return this.object<CatalogRoot>(saved.root || "");
-    const root = await this.build(await this.entities.catalogIndex(tips));
-    await this.put(key, { root: await this.content(root) });
-    return root;
+    return cachedStorageRead(this.storage,`projection:${key}`,async () => {
+      const saved = await this.get(key) as { root?: string } | null;
+      if (saved) return this.object<CatalogRoot>(saved.root || "");
+      const root = await this.build(await this.entities.catalogIndex(tips));
+      await this.put(key, { root: await this.content(root) });
+      return root;
+    });
   }
   private async build(source: { heads: string[]; index: EntityIndex }): Promise<CatalogRoot> {
     const { index } = source;

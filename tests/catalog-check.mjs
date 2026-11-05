@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
-import { EntityStorage, memoryStorage, schema } from "./entity-fixture.mjs";
+import { EntityStorage, memoryStorage, schema, storageCache } from "./entity-fixture.mjs";
 const { entityKey, flattenLibrary } = schema;
 const fixture = memoryStorage();
 const library = { version: 1, sections: [{ id: "s", name: "Section", description: "", icon: "folder" }], projects: Array.from({ length: 1000 }, (_, n) => ({
@@ -134,6 +134,8 @@ try {
   const pageKey = root.pages[0].key;
   const original = existing.objects.get(pageKey);
   existing.objects.set(pageKey,{...original,body:"[]"});
+  // A new instance/expired cache must still reject corrupt immutable objects.
+  storageCache.clearStorageReadCache();
   await assert.rejects(()=>existing.entities().catalog().readPage(),e=>e.code==="INVALID_CATALOG");
   existing.objects.set(pageKey,original);
   // An interrupted secondary-index publication is repaired by the authoritative sync reader.
@@ -172,3 +174,4 @@ try {
   assert.equal((await interrupted.entities().catalog().readPage()).total,1,"A retirement observed during pagination must not revive a cached empty library");
   console.log("Catalog recovery check passed: committed-save retries repair publication even when parent cleanup fails.");
 } finally { interrupted.storage.client.destroy(); }
+await import("./storage-read-cache-check.mjs");

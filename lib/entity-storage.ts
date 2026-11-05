@@ -5,6 +5,7 @@ import { MAX_CLOUD_JSON_BYTES, StorageError, invalid, parseCloudSnapshot, revisi
 import { canonicalLibrary, contentId, entityKey, equal, flattenLibrary, keyParts, parseEntity, stable, type EntityChange, type EntityValue, type EntityIndex, type EntityRead, type EntityVersion } from "./entity-sync";
 import { CatalogStorage } from "./catalog-storage";
 import type { ScopedRead, SyncTarget } from "./scoped-types";
+import { cachedStorageRead } from "./storage-read-cache";
 
 type Manifest = { format: "idea-bank-index"; version: 2; revision: string; parents: string[]; index: EntityIndex; digest: string; legacy?: string };
 type Graph = Map<string, { key: string; parents: string[]; legacy?: string }>;
@@ -100,8 +101,9 @@ export class EntityStorage {
     return result;
   }
   async version(key: string, revision: string): Promise<EntityVersion> {
-    const value = await this.getJson(this.versionKey(key,revision)) as EntityVersion | null;
-    if (!value) {
+    const value = await cachedStorageRead(this.storage,this.versionKey(key,revision),()=>this.loadVersion(key,revision));
+    if (value) return value;
+    {
       const graph=await this.graph(), entry=graph.get(revision);
       if (entry?.legacy && !Object.hasOwn((await this.manifest(revision,graph)).index,key)) {
         const previous: EntityValue[]=[];
@@ -115,7 +117,13 @@ export class EntityStorage {
         return {key,revision,value:null,...(previous.length?{previous:previous.slice(0,16)}:{})};
       }
     }
-    if (!value || value.key !== key || value.revision !== revision) throw new StorageError(502,"INVALID_HISTORY","Версия записи не найдена.");
+    throw new StorageError(502,"INVALID_HISTORY","Версия записи не найдена.");
+  }
+  /** Cache physical validated records only; version() assembles context-dependent legacy tombstones. */
+  private async loadVersion(key: string, revision: string): Promise<EntityVersion | null> {
+    const value = await this.getJson(this.versionKey(key,revision)) as EntityVersion | null;
+    if (!value) return null;
+    if (value.key !== key || value.revision !== revision) throw new StorageError(502,"INVALID_HISTORY","Версия записи не найдена.");
     const previous = value.previous?.map(v => parseEntity(key,v)).filter(v => v !== null) as EntityValue[] | undefined;
     return { key, revision, value: parseEntity(key,value.value), ...(previous?.length ? { previous } : {}) };
   }

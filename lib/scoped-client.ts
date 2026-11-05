@@ -4,12 +4,13 @@ import { revisionPattern,type CloudMedia } from "./cloud-library";
 import { readReaderCache,writeReaderCache } from "./reader-cache";
 import { clearScopedOperation,persistScopedOperation,queueScoped,readScopedEntry,rebaseScoped,settleScoped } from "./scoped-store";
 import { editCacheId as cacheId,type ScopedEntry,type ScopedRead,type SyncTarget } from "./scoped-types";
+import { cloudFetch,CloudAccessError } from "./cloud-access";
 export type ScopedPlan=EntityPlan & {target:SyncTarget;sequence:number};
 export class ScopedError extends Error {constructor(public code:string,message:string,public status=0){super(message);}}
 export async function scopedApi(path:string,body:unknown,method="POST"):Promise<any> {
   let response:Response;
-  try{response=await fetch(path,{method,credentials:"same-origin",cache:"no-store",headers:{"Content-Type":"application/json"},body:JSON.stringify(body),signal:AbortSignal.timeout(120000)});}
-  catch{throw new ScopedError("NETWORK","Нет связи с облаком. Локальные идеи сохранены; повтори синхронизацию позже.");}
+  try{response=await cloudFetch(path,{method,credentials:"same-origin",cache:"no-store",headers:{"Content-Type":"application/json"},body:JSON.stringify(body),signal:AbortSignal.timeout(120000)});}
+  catch(error){if(error instanceof CloudAccessError)throw new ScopedError(error.code,error.message,error.status);throw new ScopedError("NETWORK","Нет связи с облаком. Локальные идеи сохранены; повтори синхронизацию позже.");}
   const data=await response.json().catch(()=>null);
   if(!response.ok)throw new ScopedError(data?.error?.code || "REQUEST_FAILED",data?.error?.message || "Не удалось выполнить облачный запрос.",response.status);
   if(!data)throw new ScopedError("INVALID_DATA","Неполный ответ истории облака.");return data;

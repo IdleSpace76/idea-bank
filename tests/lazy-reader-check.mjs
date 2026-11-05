@@ -33,7 +33,7 @@ try {
     const context=await browser.newContext({viewport,isMobile:viewport.width<540,hasTouch:viewport.width<540});
     await context.addCookies([{name:cookie,value:token,url:origin,httpOnly:true,sameSite:"Lax"}]);
     await context.addInitScript(()=>localStorage.setItem("idea-bank.language","ru"));
-    const calls=[],batches=[],errors=[];let offline=false,heldIdeaRead=null;
+    const calls=[],batches=[],errors=[];let offline=false,denied=false,heldIdeaRead=null;
     await context.route("https://s3.eu-central-003.backblazeb2.com/**",async route=>{
       if(offline)return route.abort("failed");
       const request=route.request(),key=decodeURIComponent(new URL(request.url()).pathname).replace(/^\/fixture-bucket\//,""),headers={"Access-Control-Allow-Origin":"*","Access-Control-Allow-Methods":"GET,PUT,OPTIONS","Access-Control-Allow-Headers":"content-type,content-md5,x-amz-meta-sha256"};
@@ -50,6 +50,7 @@ try {
       const request=route.request(),url=new URL(request.url());calls.push({path:url.pathname,query:url.search,method:request.method(),etag:request.headers()["if-none-match"]});
       if(offline)return route.abort("failed");
       const reply=(body,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(body)});
+      if(denied && (url.pathname==="/api/catalog" || url.pathname.startsWith("/api/ideas/") || url.pathname==="/api/sync/scoped"))return reply({error:{code:"STORAGE_ACCESS_DENIED",message:"B2 отклонил запрос: проверьте лимиты операций и права ключа. Автоматические запросы приостановлены на пять минут."}},503);
       try {
         if(url.pathname==="/api/sync/scoped") {
           const body=request.postDataJSON();
@@ -80,6 +81,12 @@ try {
     await expect(page.locator(viewport.width<540?".recent-project-item":".project-card-shell")).toHaveCount(viewport.width<540?4:24);
     assert.equal(calls.filter(call=>call.path==="/api/sync").length,0,"Browsing never downloads a full synchronization snapshot");
     assert.equal(calls.filter(call=>call.path.startsWith("/api/ideas/")).length,0,"Cards do not request document bodies");
+    await delay(1200);
+    const readCalls=()=>calls.filter(call=>call.path==="/api/catalog" || call.path.startsWith("/api/ideas/")).length;
+    const beforeFocus=readCalls();
+    await page.evaluate(()=>{for(let n=0;n<20;n++){window.dispatchEvent(new Event("focus"));document.dispatchEvent(new Event("visibilitychange"));}});
+    await delay(800);
+    assert.equal(readCalls(),beforeFocus,"Repeated focus/visibility signals do not reread a freshly loaded library");
     const firstCard=page.locator(viewport.width<540?".recent-project-item > button":".project-card").filter({has:page.locator("strong").filter({hasText:/^Idea 0$/})}).first();
     const home=()=>page.locator(viewport.width<540?".mobile-brand":".breadcrumbs button").first().click();
     await firstCard.click();
@@ -100,7 +107,7 @@ try {
     let releaseRead;heldIdeaRead=new Promise(resolve=>releaseRead=resolve);
     const beforeRefresh=calls.filter(call=>call.path==="/api/ideas/idea-0000").length;
     await page.getByRole("heading",{name:"Document 0",exact:true}).evaluate(element=>element.dataset.continuity="kept");
-    await page.evaluate(()=>window.dispatchEvent(new Event("focus")));
+    await page.evaluate(()=>window.dispatchEvent(new Event("online")));
     await expect.poll(()=>calls.filter(call=>call.path==="/api/ideas/idea-0000").length).toBeGreaterThan(beforeRefresh);
     await expect(page.getByRole("heading",{name:"Document 0",exact:true})).toHaveAttribute("data-continuity","kept");
     await expect(page.getByText("Body 0",{exact:true})).toBeVisible();
@@ -171,6 +178,28 @@ try {
     await home();await page.getByRole("button",{name:`Действия с разделом Temporary ${viewport.width}`,exact:true}).click();await page.getByRole("menuitem",{name:"Удалить раздел",exact:true}).click();
     await page.getByRole("dialog").getByRole("button",{name:"Удалить раздел",exact:true}).click();
     await expect.poll(async()=> (await fixture.entities().catalog().readPage()).sections.length).toBe(1);
+    // A B2 denial keeps cached bodies visible and suspends reads and queued writes together.
+    await page.evaluate(()=>{location.hash="#/project/idea-0000";});
+    await expect(page.getByRole("heading",{name:"Document 0",exact:true})).toBeVisible();
+    await expect(page.locator(".local-status")).toHaveAttribute("data-sync-phase","synced");
+    denied=true;await page.evaluate(()=>window.dispatchEvent(new Event("online")));
+    await expect(page.getByText("Облако недоступно · сохранённая версия",{exact:true})).toBeVisible();
+    await expect(page.getByText("Офлайн · сохранённая версия",{exact:true})).toHaveCount(0);
+    await expect(page.getByRole("heading",{name:"Document 0",exact:true})).toBeVisible();
+    await page.getByRole("button",{name:"Добавить блок",exact:true}).click();
+    const queuedHeading=`Queued during B2 pause ${viewport.width}`;
+    await page.getByLabel("Заголовок блока",{exact:true}).last().fill(queuedHeading);
+    await page.getByRole("button",{name:"Сохранить идею",exact:true}).click();
+    await delay(1500);
+    const pausedCalls=calls.filter(call=>call.path==="/api/catalog" || call.path.startsWith("/api/ideas/") || call.path==="/api/sync/scoped").length;
+    await page.evaluate(()=>{for(let n=0;n<10;n++){window.dispatchEvent(new Event("focus"));window.dispatchEvent(new Event("online"));}});
+    await delay(1800);
+    assert.equal(calls.filter(call=>call.path==="/api/catalog" || call.path.startsWith("/api/ideas/") || call.path==="/api/sync/scoped").length,pausedCalls,"Focus, reconnect and a pending edit cannot bypass the B2 cooldown");
+    assert.ok(!(await fixture.entities().catalog().readIdea("idea-0000")).idea.blocks.some(block=>block.heading===queuedHeading));
+    denied=false;await page.locator(".local-status").click();
+    await page.getByRole("button",{name:"Синхронизировать",exact:true}).click();
+    await expect.poll(async()=> (await fixture.entities().catalog().readIdea("idea-0000")).idea.blocks.some(block=>block.heading===queuedHeading),{timeout:20000}).toBe(true);
+    await expect(page.getByText("Облако недоступно · сохранённая версия",{exact:true})).toHaveCount(0);
     assert.equal(calls.filter(call=>call.path==="/api/sync").length,0,"All CRUD operations use scoped synchronization");
     assert.equal(errors.length,0,errors.join("\n"));assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
     await context.close();console.log(`Lazy reader checks passed at ${viewport.width}px: 1000 cards, body-on-open, conditional reads, media, offline cache, uncached documents, reconnect, search, scrolling and safe partial editing.`);
