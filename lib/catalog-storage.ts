@@ -4,6 +4,7 @@ import { MAX_CLOUD_JSON_BYTES, StorageError, invalid, revisionPattern, type Clou
 import { entityKey, equal, keyParts, stable, type EntityIndex } from "./entity-sync";
 import { parseLibrary, summarizeIdea, type IdeaSummary, type Project, type Section, type TextBlock } from "./ideas";
 import type { EntityStorage } from "./entity-storage";
+import type { IdeaEditVersions } from "./scoped-types";
 
 type IdeaMetadata = IdeaSummary & { blockIds: string[] };
 export type CatalogCard = { id: string; version: string; variants: (IdeaSummary | null)[]; conflicted: boolean };
@@ -13,7 +14,7 @@ type IdeaRef = { key: string; version: string };
 type IdeaDescriptor = { id: string; version: string; metadata: string[]; sections: Record<string, string[]>; blocks: Record<string, string[]> };
 type CatalogRoot = { format: "idea-bank-catalog"; version: 1; revision: string; heads: string[]; sections: CatalogSection[]; pages: PageRef[]; shards: Record<string, string>; mediaShards: Record<string, string>; sectionCounts: Record<string, number>; count: number };
 export type CatalogPage = { revision: string; sections: CatalogSection[]; ideas: CatalogCard[]; nextCursor: string | null; total: number; sectionCounts: Record<string, number>; uninitialized: boolean };
-export type CloudIdeaResult = { id: string; version: string; notModified: true } | { id: string; version: string; notModified: false; idea: Project };
+export type CloudIdeaResult = { id: string; version: string; notModified: true } | { id: string; version: string; notModified: false; idea: Project; editBase:IdeaEditVersions };
 const hash = (value: unknown) => createHash("sha256").update(stable(value)).digest("hex");
 const digestPattern = /^[a-f0-9]{64}$/;
 const missing = (error: unknown) => { const e = error as { name?: string; $metadata?: { httpStatusCode?: number } }; return ["NoSuchKey", "NotFound"].includes(e?.name || "") || e?.$metadata?.httpStatusCode === 404; };
@@ -207,10 +208,12 @@ export class CatalogStorage {
     if (versionOnly) return { id, version: ref.version };
     if (knownVersion === ref.version) return { id, version: ref.version, notModified: true };
     const descriptor = await this.object<IdeaDescriptor>(ref.key);
+    const editIndex:EntityIndex={};
     const readOne = async (key: string, versions: string[]) => {
       if (versions.length !== 1) return conflict();
       const record = await this.entities.version(key, versions[0]);
       if (record.value === null) return conflict();
+      editIndex[key]=versions;
       return record.value;
     };
     const metadata = await readOne(entityKey("idea", id), descriptor.metadata) as IdeaMetadata;
@@ -220,6 +223,6 @@ export class CatalogStorage {
       blocks.push(...await Promise.all(metadata.blockIds.slice(start, start + 12).map(async block => await readOne(entityKey("block", id, block), descriptor.blocks[block] || []) as TextBlock)));
     }
     const idea = parseLibrary(JSON.stringify({ version: 1, sections: [section], projects: [{ ...summarizeIdea(metadata), blocks }] })).projects[0];
-    return { id, version: ref.version, notModified: false, idea };
+    return { id, version: ref.version, notModified: false, idea, editBase:{heads:root.heads,index:editIndex,section} };
   }
 }

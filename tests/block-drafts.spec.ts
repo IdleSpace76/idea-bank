@@ -28,7 +28,12 @@ test("cancel and explicit discard clear a draft without changing the saved idea"
   page.once("dialog",dialog=>dialog.accept());await page.getByRole("button",{name:"Отмена",exact:true}).click();
   await page.reload();await expect(page.getByRole("button",{name:"Редактировать блок 1",exact:true})).toBeVisible();await expect(page.locator(".draft-recovery")).toHaveCount(0);
   await page.getByRole("button",{name:"Редактировать блок 1",exact:true}).click();await page.getByLabel("Заголовок блока",{exact:true}).first().fill("Discard me");await expect(page.locator(".draft-status")).toHaveText("Черновик сохранён на устройстве");
-  await page.reload();await page.getByRole("button",{name:"Удалить черновик",exact:true}).click();await expect(page.locator(".draft-recovery")).toHaveCount(0);expect(await page.evaluate(readStoredLibrary)).toEqual(original);
+  await page.reload();await page.getByRole("button",{name:"Добавить блок",exact:true}).click();
+  const decision=page.getByRole("dialog",{name:"Есть несохранённый черновик",exact:true});await expect(decision).toBeVisible();
+  await expect(decision).toContainText("Перед добавлением или редактированием блоков");await decision.getByRole("button",{name:"Отмена",exact:true}).click();await expect(page.locator(".draft-recovery")).toBeVisible();
+  await page.getByRole("button",{name:"Добавить блок",exact:true}).click();await decision.getByRole("button",{name:"Удалить черновик",exact:true}).click();await expect(page.locator(".draft-recovery")).toHaveCount(0);
+  await page.getByRole("button",{name:"Добавить блок",exact:true}).click();await expect(page.locator("#project-editor")).toBeVisible();
+  page.once("dialog",dialog=>dialog.accept());await page.getByRole("button",{name:"Отмена",exact:true}).click();expect(await page.evaluate(readStoredLibrary)).toEqual(original);
 });
 
 test("changed blocks require comparison before restoring and preserve latest idea metadata",async({page})=>{

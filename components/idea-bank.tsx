@@ -70,6 +70,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
   const [sidebarQuery, setSidebarQuery] = useState("");
   const [draft, setDraft] = useState<Project | null>(null);
   const [draftReview,setDraftReview]=useState<{record:BlockDraft;current:Project}|null>(null);
+  const [draftDecision,setDraftDecision]=useState(false);
   const [message, setMessage] = useState("");
   const [storageError, setStorageError] = useState("");
   const [readOnly, setReadOnly] = useState(false);
@@ -170,6 +171,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
   }, []);
 
   useEffect(() => { if (ready) heading.current?.focus(); }, [route, ready]);
+  useEffect(()=>setDraftDecision(false),[route]);
   useEffect(() => {
     function constrainSidebar() { setSidebarWidth(width => width === null ? null : Math.min(width, Math.max(220, innerWidth - 360))); }
     window.addEventListener("resize", constrainSidebar);
@@ -249,12 +251,12 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
       throw error;
     } finally {bridgeRef.current=false;savingRef.current=false;setSaving(false);}
   }
-  async function prepareEdit(target:SyncTarget):Promise<Library> {
+  async function prepareEdit(target:SyncTarget,localBlocks=false):Promise<Library> {
     if(!cloudScope || legacySession)return prepareFull();
     if(draft || savingRef.current || bridgeRef.current)throw new Error(t("Сначала сохрани или отмени редактирование и дождись завершения других операций."));
     savingRef.current=true;bridgeRef.current=true;setSaving(true);
     try {
-      const result=await prepareTarget(cloudScope,target);
+      const result=await prepareTarget(cloudScope,target,localBlocks?currentProject:undefined,localBlocks?reader.detail?.editBase:undefined);
       // A just-created section may still be waiting in this device's durable queue.
       for(const row of await readScopedIndex())if(row.scope===cloudScope && row.section && !result.entry.local[entityKey("section",row.section.id)])result.entry.local[entityKey("section",row.section.id)]=row.section;
       const selected=assembleLibrary(result.entry.local);
@@ -335,11 +337,12 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
 
   async function editBlock(id: string) {
     if (!currentProject || readOnly || savingRef.current) return;
+    if(blockDraft.recovery){setDraftDecision(true);return;}
     try {
-      const full=await prepareEdit({kind:"idea",id:currentProject.id}), project=full.projects.find(idea=>idea.id===currentProject.id);
+      const full=await prepareEdit({kind:"idea",id:currentProject.id},true), project=full.projects.find(idea=>idea.id===currentProject.id);
       savingRef.current=true;setSaving(true);
       if(!project)throw new Error(t("Идея не найдена."));
-      if(!await blockDraft.start(project))return;
+      if(!await blockDraft.start(project)){setDraftDecision(true);return;}
       returnBlock.current = id; setDraft(structuredClone(project)); setScrollTarget(id);
     } catch(reason){setStorageError(reason instanceof Error?reason.message:String(reason));}
     finally{savingRef.current=false;setSaving(false);}
@@ -347,11 +350,13 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
 
   async function addBlock() {
     if (!currentProject || readOnly || saving || savingRef.current) return;
+    if(!draft && blockDraft.recovery){setDraftDecision(true);return;}
     let project = draft;
     if(!project)try{
-      project=(await prepareEdit({kind:"idea",id:currentProject.id})).projects.find(idea=>idea.id===currentProject.id)||null;
+      project=(await prepareEdit({kind:"idea",id:currentProject.id},true)).projects.find(idea=>idea.id===currentProject.id)||null;
       savingRef.current=true;setSaving(true);
-      if(!project || !await blockDraft.start(project))return;
+      if(!project)return;
+      if(!await blockDraft.start(project)){setDraftDecision(true);return;}
     }catch(reason){setStorageError(reason instanceof Error?reason.message:String(reason));return;}
     finally{savingRef.current=false;setSaving(false);}
     if(!project)return;
@@ -502,6 +507,10 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
 
         </>}
       </main>}
+      {draftDecision && blockDraft.recovery && <Dialog title={t("Есть несохранённый черновик")} onClose={()=>setDraftDecision(false)}>
+        <p className="dialog-description">{t("Перед добавлением или редактированием блоков восстановите либо удалите предыдущий черновик.")}</p>
+        <div className="draft-decision-actions"><button className="primary-button" onClick={()=>{setDraftDecision(false);void restoreDraft();}}>{t("Восстановить черновик")}</button><button className="secondary-button" onClick={()=>{setDraftDecision(false);void discardDraft();}}>{t("Удалить черновик")}</button><button className="secondary-button" onClick={()=>setDraftDecision(false)}>{t("Отмена")}</button></div>
+      </Dialog>}
       {draftReview && <Dialog title={t("Идея изменилась после создания черновика")} onClose={()=>setDraftReview(null)} closeDisabled={saving}>
         <p className="dialog-description">{t("Сравните версии перед восстановлением. Черновик откроется для редактирования; текущие блоки будут заменены только после нажатия «Сохранить».")}</p>
         <div className="draft-comparison"><section><h3>{t("Текущие блоки")}</h3><pre>{draftReview.current.blocks.map(block=>[block.heading,block.text,...(block.media || []).map(file=>file.name)].filter(Boolean).join("\n")).join("\n\n")}</pre></section><section><h3>{t("Локальный черновик")}</h3><pre>{draftReview.record.project.blocks.map(block=>[block.heading,block.text,...(block.media || []).map(file=>file.name)].filter(Boolean).join("\n")).join("\n\n")}</pre></section></div>

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { loadReaderIdea, loadReaderPage, ReaderError, type ReaderPage } from "@/lib/library-reader";
 import { subscribeLocalChanges } from "@/lib/library-store";
 import { subscribeScoped } from "@/lib/scoped-store";
-import type { SyncTarget } from "@/lib/scoped-types";
+import type { SyncTarget,ScopedRead } from "@/lib/scoped-types";
 import type { IdeaSummary, Library, Project, Route, Section } from "@/lib/ideas";
 
 type List = { items: IdeaSummary[]; page: ReaderPage | null; loading: boolean; error: string; conflict?:SyncTarget;auth?:boolean;migration?:boolean;source?:string };
@@ -15,7 +15,7 @@ const projects = (ideas: IdeaSummary[]): Project[] => ideas.map(idea => ({...ide
 export function useLibraryReader(scope: string | undefined, enabled: boolean, route: Route, query: string, sidebarQuery: string, locked: boolean) {
   const [main,setMain] = useState<List>(emptyList), [search,setSearch] = useState<List>(emptyList);
   const [sidebar,setSidebar] = useState<Record<string,List>>({});
-  const [detail,setDetail] = useState<{id:string;idea?:Project;loading:boolean;offline:boolean;error:string;conflict?:SyncTarget;auth?:boolean}>({id:"",loading:false,offline:false,error:""});
+  const [detail,setDetail] = useState<{id:string;idea?:Project;editBase?:ScopedRead;loading:boolean;offline:boolean;error:string;conflict?:SyncTarget;auth?:boolean}>({id:"",loading:false,offline:false,error:""});
   const detailRef=useRef(detail);detailRef.current=detail;
   const detailScope=useRef(scope);
   const [refreshId,setRefreshId] = useState(0), [online,setOnline] = useState(true);
@@ -67,12 +67,13 @@ export function useLibraryReader(scope: string | undefined, enabled: boolean, ro
     if (!ideaId) {setDetail({id:"",loading:false,offline:false,error:""});return;}
     let cancelled = false;
     const inMemory=detailScope.current===scope && detailRef.current.id===ideaId ? detailRef.current.idea : undefined;
+    const editBase=inMemory?detailRef.current.editBase:undefined;
     detailScope.current=scope;
-    setDetail({id:ideaId,idea:inMemory,loading:true,offline:navigator.onLine===false,error:""});
-    void loadReaderIdea(scope,ideaId,cached=>{if(!cancelled && !inMemory)setDetail({id:ideaId,idea:cached.idea,loading:true,offline:cached.offline,error:""});})
-      .then(result => {if(!cancelled)setDetail({id:ideaId,idea:result.idea,loading:false,offline:result.offline,error:""});})
+    setDetail({id:ideaId,idea:inMemory,editBase,loading:true,offline:navigator.onLine===false,error:""});
+    void loadReaderIdea(scope,ideaId,cached=>{if(!cancelled && !inMemory)setDetail({id:ideaId,idea:cached.idea,editBase:cached.editBase,loading:true,offline:cached.offline,error:""});})
+      .then(result => {if(!cancelled)setDetail({id:ideaId,idea:result.idea,editBase:result.editBase,loading:false,offline:result.offline,error:""});})
       .catch(error => {if(!cancelled) {
-        if(inMemory && error instanceof ReaderError && ["OFFLINE","UNAVAILABLE"].includes(error.code))setDetail({id:ideaId,idea:inMemory,loading:false,offline:true,error:""});
+        if(inMemory && error instanceof ReaderError && ["OFFLINE","UNAVAILABLE"].includes(error.code))setDetail({id:ideaId,idea:inMemory,editBase,loading:false,offline:true,error:""});
         else setDetail({id:ideaId,loading:false,offline:false,error:reason(error),auth:error instanceof ReaderError && error.code==="UNAUTHORIZED",conflict:error instanceof ReaderError?error.target:undefined});
       }});
     return () => {cancelled=true;};

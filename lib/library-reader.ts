@@ -3,11 +3,13 @@ import { prepareLocalCatalog, readLocalCatalogPage, readLocalIdea, readLocalSect
 import { readReaderCache, removeReaderCache, writeReaderCache,markReaderFresh } from "./reader-cache";
 import type { CatalogPage } from "./catalog-storage";
 import { overlayIdea,overlayPage } from "./scoped-overlay";
-import type { SyncTarget } from "./scoped-types";
+import type { SyncTarget,ScopedRead } from "./scoped-types";
 import { noteScopedDeletion,observeScopedAlive,scopedReadCounter,readScopedDeletions } from "./scoped-store";
+import { flattenLibrary } from "./entity-sync";
+import type { IdeaEditVersions } from "./scoped-types";
 
 export type ReaderPage = { sections: Section[]; ideas: IdeaSummary[]; total: number; counts: Record<string,number>; revision: string; nextCursor: string | null; offline: boolean; uninitialized: boolean };
-export type ReaderIdea = { idea: Project; version: string; offline: boolean };
+export type ReaderIdea = { idea: Project; version: string; offline: boolean; editBase?:ScopedRead };
 export type ReaderQuery = { query?: string; sectionId?: string; cursor?: string; limit?: number };
 export class ReaderError extends Error { constructor(public code: string, message: string,public target?:SyncTarget) { super(message); } }
 const unavailable = () => new ReaderError("OFFLINE","Для открытия этой идеи нужно подключение к интернету");
@@ -27,6 +29,15 @@ function checkedIdea(value: unknown): Project {
   const idea = value as Project;
   const section = {id:idea?.sectionId,name:"validation",description:"",icon:"folder"};
   return parseLibrary(JSON.stringify({version:1,sections:[section],projects:[idea]})).projects[0];
+}
+/** Versions reuse the already received body, so opening an idea does not transfer its text twice. */
+function editBaseline(value:IdeaEditVersions|undefined,idea:Project):ScopedRead|undefined {
+  if(!value)return;
+  try{
+    const library=parseLibrary(JSON.stringify({version:1,sections:[value.section],projects:[idea]})),values=flattenLibrary(library);
+    if(Object.keys(value.index).some(key=>!Object.hasOwn(values,key) || value.index[key].length!==1))return;
+    return {target:{kind:"idea",id:idea.id},heads:value.heads,index:value.index,records:Object.entries(value.index).map(([key,revisions])=>({key,revision:revisions[0],value:values[key]}))};
+  }catch{return;}
 }
 function checkedPage(value: unknown): ReaderPage {
   const page = value as CatalogPage;
@@ -95,7 +106,7 @@ export async function loadReaderIdea(scope: string | undefined, id: string, onCa
   if(saved && !(pending && "deleted" in pending))onCached?.({...saved,offline:navigator.onLine===false});
   try {
     const started=await scopedReadCounter();
-    const response = await get(`/api/ideas/${encodeURIComponent(id)}`,saved && saved.version!=="local" ? {"If-None-Match":`"${saved.version}"`} : undefined);
+    const response = await get(`/api/ideas/${encodeURIComponent(id)}`,saved?.editBase && saved.version!=="local" ? {"If-None-Match":`"${saved.version}"`} : undefined);
     if (response.status === 304) {
       if (!saved) throw new ReaderError("INVALID_DATA","Некорректный ответ облака.");
       await observeScopedAlive(scope,[id],[saved.idea.sectionId],started);
@@ -109,7 +120,7 @@ export async function loadReaderIdea(scope: string | undefined, id: string, onCa
     if (idea.id !== id) throw new ReaderError("INVALID_DATA","Некорректный ответ облака.");
     await observeScopedAlive(scope,[id],[idea.sectionId],started);
     if((await readScopedDeletions()).some(row=>row.scope===scope && row.kind==="idea" && row.id===id))throw new ReaderError("NOT_FOUND","Идея не найдена.");
-    const result = {idea,version:data.version as string,offline:false};
+    const result:ReaderIdea = {idea,version:data.version as string,offline:false,editBase:editBaseline(data.editBase,idea)};
     await writeReaderCache(scope,"idea",id,result).catch(() => {});
     return result;
   } catch (error) {

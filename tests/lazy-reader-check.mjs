@@ -89,6 +89,11 @@ try {
     await home();await firstCard.click();
     await expect(page.getByRole("heading",{name:"Document 0",exact:true})).toBeVisible();
     await expect.poll(()=>calls.filter(call=>call.path==="/api/ideas/idea-0000").at(-1)?.etag).toBeTruthy();
+    // The viewed body already carries its causal versions: adding a block needs no cloud read.
+    const beforeEdit=calls.filter(call=>call.path==="/api/sync/scoped" && call.method==="POST").length;
+    await page.getByRole("button",{name:"Добавить блок",exact:true}).click();await expect(page.locator("#project-editor")).toBeVisible();
+    assert.equal(calls.filter(call=>call.path==="/api/sync/scoped" && call.method==="POST").length,beforeEdit,"Opening a cached block editor does not await the cloud");
+    page.once("dialog",dialog=>dialog.accept());await page.getByRole("button",{name:"Отмена",exact:true}).click();await expect(page.locator("#project-editor")).toHaveCount(0);
     const source=await fixture.entities().catalogIndex(),key=entityKey("block","idea-0000","body");
     await fixture.entities().save({operationId:randomUUID(),heads:source.heads,changes:[{key,base:source.index[key],value:{...library.projects[0].blocks[0],text:`Updated ${viewport.width}`}}]});
     // A delayed version check must leave the existing document mounted and readable.

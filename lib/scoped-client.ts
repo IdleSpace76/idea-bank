@@ -27,9 +27,21 @@ export function scopedPlan(entry:ScopedEntry,read:ScopedRead,local=entry.local,b
   const plan:ScopedPlan={scope:entry.scope,target:entry.target,sequence:entry.sequence,expected,local,base:baseline || before.remote,...remote,read,sources:[],first:false,conflicts:[]};
   plan.conflicts=resolvePlan(plan).conflicts;return plan;
 }
-export async function prepareTarget(scope:string,target:SyncTarget) {
+export async function prepareTarget(scope:string,target:SyncTarget,visible?:import("./ideas").Project,viewBase?:ScopedRead) {
   const pending=await readScopedEntry(scope,target);
   if(pending)return {entry:pending,library:assembleLibrary(pending.local)};
+  if(target.kind==="idea" && visible?.id===target.id) {
+    const document=await readReaderCache<{editBase?:ScopedRead}>(scope,"idea",target.id).catch(()=>undefined);
+    const cached=await readReaderCache<ScopedRead>(scope,"idea",cacheId(target)).catch(()=>undefined);
+    for(const base of [viewBase,document?.editBase,cached])if(base)try{
+      if(!equal(base.target,target))continue;
+      const local=validateRead(base,{},{}).remote,library=assembleLibrary(local);
+      // A matching visible snapshot is a causal edit base, not permission to overwrite the cloud.
+      if(!equal(library.projects.find(idea=>idea.id===target.id),visible))continue;
+      const entry:ScopedEntry={scope,target,sequence:0,base,local};
+      if(!scopedPlan(entry,base).conflicts.length)return {entry,library};
+    }catch{/* Invalid or mismatched cached baselines fall back to the authoritative read. */}
+  }
   let read:ScopedRead;
   try{if(navigator.onLine===false)throw new Error("Offline");read=await readTarget(target);await writeReaderCache(scope,"idea",cacheId(target),read).catch(()=>{});}
   catch(error){

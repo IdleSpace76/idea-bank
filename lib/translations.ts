@@ -1,5 +1,6 @@
 /** Interface text only. Never pass user-created content through this dictionary. */
 export const english: Record<string, string> = {
+  "Перед добавлением или редактированием блоков восстановите либо удалите предыдущий черновик.": "Restore or delete the previous draft before adding or editing blocks.",
   "Черновик изменён в другой вкладке. Сохранённая копия не перезаписана.": "The draft changed in another tab. The saved copy was not overwritten.",
   "Не удалось прочитать локальный черновик. Его данные оставлены без изменений.": "Could not read the local draft. Its data was left unchanged.",
   "Не удалось сохранить вложения черновика. Дождитесь завершения загрузки файлов.": "Could not save draft attachments. Wait for file import to finish.",
