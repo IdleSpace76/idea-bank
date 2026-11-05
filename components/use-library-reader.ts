@@ -68,8 +68,9 @@ export function useLibraryReader(scope: string | undefined, enabled: boolean, ro
     let cancelled = false;
     const inMemory=detailScope.current===scope && detailRef.current.id===ideaId ? detailRef.current.idea : undefined;
     detailScope.current=scope;
-    setDetail({id:ideaId,idea:inMemory,loading:true,offline:false,error:""});
-    void loadReaderIdea(scope,ideaId).then(result => {if(!cancelled)setDetail({id:ideaId,idea:result.idea,loading:false,offline:result.offline,error:""});})
+    setDetail({id:ideaId,idea:inMemory,loading:true,offline:navigator.onLine===false,error:""});
+    void loadReaderIdea(scope,ideaId,cached=>{if(!cancelled && !inMemory)setDetail({id:ideaId,idea:cached.idea,loading:true,offline:cached.offline,error:""});})
+      .then(result => {if(!cancelled)setDetail({id:ideaId,idea:result.idea,loading:false,offline:result.offline,error:""});})
       .catch(error => {if(!cancelled) {
         if(inMemory && error instanceof ReaderError && ["OFFLINE","UNAVAILABLE"].includes(error.code))setDetail({id:ideaId,idea:inMemory,loading:false,offline:true,error:""});
         else setDetail({id:ideaId,loading:false,offline:false,error:reason(error),auth:error instanceof ReaderError && error.code==="UNAUTHORIZED",conflict:error instanceof ReaderError?error.target:undefined});

@@ -33,7 +33,7 @@ try {
     const context=await browser.newContext({viewport,isMobile:viewport.width<540,hasTouch:viewport.width<540});
     await context.addCookies([{name:cookie,value:token,url:origin,httpOnly:true,sameSite:"Lax"}]);
     await context.addInitScript(()=>localStorage.setItem("idea-bank.language","ru"));
-    const calls=[],batches=[],errors=[];let offline=false;
+    const calls=[],batches=[],errors=[];let offline=false,heldIdeaRead=null;
     await context.route("https://s3.eu-central-003.backblazeb2.com/**",async route=>{
       if(offline)return route.abort("failed");
       const request=route.request(),key=decodeURIComponent(new URL(request.url()).pathname).replace(/^\/fixture-bucket\//,""),headers={"Access-Control-Allow-Origin":"*","Access-Control-Allow-Methods":"GET,PUT,OPTIONS","Access-Control-Allow-Headers":"content-type,content-md5,x-amz-meta-sha256"};
@@ -60,6 +60,7 @@ try {
         if(url.pathname==="/api/catalog/media")return reply(await fixture.entities().catalog().readMedia(url.searchParams.get("id")));
         if(url.pathname==="/api/storage/media/upload")return reply(await fixture.storage.createUpload(request.postDataJSON()));
         if(url.pathname.startsWith("/api/ideas/")) {
+          if(heldIdeaRead)await heldIdeaRead;
           const result=await fixture.entities().catalog().readIdea(decodeURIComponent(url.pathname.split("/").pop()),request.headers()["if-none-match"]?.replaceAll('"',""));
           if(result.notModified)return route.fulfill({status:304,body:""});
           return reply(result);
@@ -87,11 +88,27 @@ try {
     assert.equal(calls.filter(call=>call.path==="/api/ideas/idea-0000").length,1);
     await home();await firstCard.click();
     await expect(page.getByRole("heading",{name:"Document 0",exact:true})).toBeVisible();
-    assert.ok(calls.filter(call=>call.path==="/api/ideas/idea-0000").at(-1).etag,"Reopening checks the cached version");
+    await expect.poll(()=>calls.filter(call=>call.path==="/api/ideas/idea-0000").at(-1)?.etag).toBeTruthy();
     const source=await fixture.entities().catalogIndex(),key=entityKey("block","idea-0000","body");
     await fixture.entities().save({operationId:randomUUID(),heads:source.heads,changes:[{key,base:source.index[key],value:{...library.projects[0].blocks[0],text:`Updated ${viewport.width}`}}]});
+    // A delayed version check must leave the existing document mounted and readable.
+    let releaseRead;heldIdeaRead=new Promise(resolve=>releaseRead=resolve);
+    const beforeRefresh=calls.filter(call=>call.path==="/api/ideas/idea-0000").length;
+    await page.getByRole("heading",{name:"Document 0",exact:true}).evaluate(element=>element.dataset.continuity="kept");
     await page.evaluate(()=>window.dispatchEvent(new Event("focus")));
+    await expect.poll(()=>calls.filter(call=>call.path==="/api/ideas/idea-0000").length).toBeGreaterThan(beforeRefresh);
+    await expect(page.getByRole("heading",{name:"Document 0",exact:true})).toHaveAttribute("data-continuity","kept");
+    await expect(page.getByText("Body 0",{exact:true})).toBeVisible();
+    await expect(page.getByText("Загружаем идею…",{exact:true})).toHaveCount(0);
+    releaseRead();heldIdeaRead=null;
     await expect(page.getByText(`Updated ${viewport.width}`,{exact:true})).toBeVisible();
+    // Reload has no in-memory document: show the persisted cache before the cloud responds.
+    const beforeReload=calls.filter(call=>call.path==="/api/ideas/idea-0000").length;
+    heldIdeaRead=new Promise(resolve=>releaseRead=resolve);await page.reload();
+    await expect.poll(()=>calls.filter(call=>call.path==="/api/ideas/idea-0000").length).toBeGreaterThan(beforeReload);
+    await expect(page.getByText(`Updated ${viewport.width}`,{exact:true})).toBeVisible();
+    await expect(page.getByText("Загружаем идею…",{exact:true})).toHaveCount(0);
+    releaseRead();heldIdeaRead=null;
     offline=true;await page.evaluate(()=>{Object.defineProperty(navigator,"onLine",{configurable:true,get:()=>false});window.dispatchEvent(new Event("offline"));});
     await expect(page.getByText("Офлайн · сохранённая версия",{exact:true})).toBeVisible();
     await expect(page.getByText(`Updated ${viewport.width}`,{exact:true})).toBeVisible();

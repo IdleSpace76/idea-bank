@@ -278,7 +278,7 @@ legend { font-size: 12px; color: var(--muted); padding: 0; }
 .editor-block .field-label { margin-top: 8px; }
 .block-heading-field { display: flex; align-items: center; gap: 8px; padding-right: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
 .block-heading-field:focus-within { border-color: var(--green); }
-.editor-block .block-heading-field > input { flex: 1; width: 0; min-width: 0; border: 0; background: transparent; font-size: 24px; outline: none; }
+.editor-block .block-heading-field > input { flex: 1; width: 0; min-width: 0; min-height: 40px; padding: 6px 12px; line-height: 1.25; border: 0; background: transparent; font-size: 24px; outline: none; }
 .heading-size-label { flex: 0 1 175px; min-width: 80px; max-width: 45%; }
 .heading-size-label select { width: 100%; min-width: 0; font-size: 13px; padding: 6px 25px 6px 8px; background-position: right 6px center; }
 .editor-save { position: sticky; bottom: max(20px, env(safe-area-inset-bottom)); z-index: 20; width: max-content; margin: 25px 0 0 auto; display: flex; justify-content: flex-end; border-radius: 50px; }
@@ -700,7 +700,10 @@ body.is-sidebar-resizing, body.is-sidebar-resizing * { cursor: col-resize !impor
 
 .load-more-ideas { margin-top: 24px; }
 .draft-recovery { padding: 18px; margin-bottom: 20px; border: 1px solid var(--block-border); border-radius: 12px; background: var(--surface); }
-.draft-recovery p, .draft-status { color: var(--muted); font-size: 14px; line-height: 1.5; }
+.draft-recovery > div > strong { font-size: 18px; }
+.draft-recovery p { color: var(--muted); font-size: 16px; line-height: 1.5; }
+.draft-recovery-actions > button { font-size: 16px; }
+.draft-status { color: var(--muted); font-size: 14px; line-height: 1.5; }
 .draft-recovery-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
 .draft-comparison section { margin: 16px 0; }
 .draft-comparison pre { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; padding: 12px; border: 1px solid var(--block-border); border-radius: 10px; }

@@ -77,7 +77,7 @@ export async function loadReaderPage(scope: string | undefined, options: ReaderQ
   }
 }
 
-export async function loadReaderIdea(scope: string | undefined, id: string): Promise<ReaderIdea> {
+export async function loadReaderIdea(scope: string | undefined, id: string, onCached?: (value:ReaderIdea)=>void): Promise<ReaderIdea> {
   if (!scope) {
     const saved = await readLocalIdea(id);
     if (!saved) throw new ReaderError("NOT_FOUND","Идея не найдена.");
@@ -91,6 +91,8 @@ export async function loadReaderIdea(scope: string | undefined, id: string): Pro
   if (!saved && (await readMeta<{scope:string}>("sync-v2"))?.scope===scope) {
     const local=await readLocalIdea(id).catch(()=>null);if(local)saved={idea:local.idea,version:"local",offline:true};
   }
+  // Render a verified local copy immediately; the request still checks its version and access.
+  if(saved && !(pending && "deleted" in pending))onCached?.({...saved,offline:navigator.onLine===false});
   try {
     const started=await scopedReadCounter();
     const response = await get(`/api/ideas/${encodeURIComponent(id)}`,saved && saved.version!=="local" ? {"If-None-Match":`"${saved.version}"`} : undefined);
