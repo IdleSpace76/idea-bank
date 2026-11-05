@@ -79,6 +79,12 @@ try {
   await edit(a.page);await a.page.getByLabel("Текст",{exact:true}).nth(1).fill("Incoming second block");await save(a.page);
   await expect.poll(()=>blockText("two")).toBe("Incoming second block");await delay(600);
   await expect(b.page.getByLabel("Заголовок блока",{exact:true}).first()).toHaveValue("Unsaved heading");
+  await expect(b.page.locator(".draft-status")).toHaveText("Черновик сохранён на устройстве");
+  await b.page.reload();await b.page.getByRole("button",{name:"Восстановить черновик",exact:true}).click();
+  const recovery=b.page.getByRole("dialog",{name:"Идея изменилась после создания черновика",exact:true});
+  await expect(recovery).toContainText("Incoming second block");await recovery.getByRole("button",{name:"Восстановить черновик",exact:true}).click();
+  await expect(b.page.getByLabel("Заголовок блока",{exact:true}).first()).toHaveValue("Unsaved heading");
+  assert.equal(await blockText("two"),"Incoming second block","Recovering a draft never writes to the cloud");
   b.page.once("dialog",dialog=>dialog.accept());await b.page.getByRole("button",{name:"Отмена",exact:true}).click();await expect(b.page.getByText("Incoming second block",{exact:true})).toBeVisible();
   // Prepare both base versions online, then save independent edits while offline.
   await edit(a.page);await edit(b.page);await setOffline(a,true);await setOffline(b,true);

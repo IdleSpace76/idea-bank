@@ -699,6 +699,11 @@ body.is-sidebar-resizing, body.is-sidebar-resizing * { cursor: col-resize !impor
 .sync-version-body > p { white-space: pre-wrap; }
 
 .load-more-ideas { margin-top: 24px; }
+.draft-recovery { padding: 18px; margin-bottom: 20px; border: 1px solid var(--block-border); border-radius: 12px; background: var(--surface); }
+.draft-recovery p, .draft-status { color: var(--muted); font-size: 14px; line-height: 1.5; }
+.draft-recovery-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.draft-comparison section { margin: 16px 0; }
+.draft-comparison pre { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; padding: 12px; border: 1px solid var(--block-border); border-radius: 10px; }
 
 .cloud-sync-review .menu-options { gap: 8px; }
 .cloud-sync-review .conflict-option { padding: 12px; border: 1px solid var(--block-border); border-radius: 12px; background: var(--surface); min-height: 64px; touch-action: manipulation; }

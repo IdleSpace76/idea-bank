@@ -19,6 +19,8 @@ import { readScopedIndex } from "@/lib/scoped-store";
 import type { ScopedEntry,SyncTarget } from "@/lib/scoped-types";
 import { assembleLibrary,entityKey } from "@/lib/entity-sync";
 import { useLibraryReader } from "./use-library-reader";
+import { useBlockDraft } from "./use-block-draft";
+import type { BlockDraft } from "@/lib/block-drafts";
 import { applyVisibleEdit } from "@/lib/library-edit";
 import { SyncStatus } from "./sync-status";
 import { equal } from "@/lib/entity-sync";
@@ -67,6 +69,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
   const [query, setQuery] = useState("");
   const [sidebarQuery, setSidebarQuery] = useState("");
   const [draft, setDraft] = useState<Project | null>(null);
+  const [draftReview,setDraftReview]=useState<{record:BlockDraft;current:Project}|null>(null);
   const [message, setMessage] = useState("");
   const [storageError, setStorageError] = useState("");
   const [readOnly, setReadOnly] = useState(false);
@@ -86,7 +89,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
   const returnBlock = useRef<string | null>(null);
   const loadMoreTarget = useRef<HTMLDivElement>(null);
 
-  const readerLocked=!!draft || saving || importingMedia || backupBusy || (!!modal && modal.type!=="storage-info");
+  const readerLocked=!!draft || !!draftReview || saving || importingMedia || backupBusy || (!!modal && modal.type!=="storage-info");
   const reader=useLibraryReader(legacySession?undefined:cloudScope,ready,route,query,sidebarQuery,readerLocked);
   const readerRef=useRef(reader);readerRef.current=reader;
   const preparedId=route.screen==="project" ? route.id : modal && "project" in modal ? modal.project.id : undefined;
@@ -96,6 +99,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
   const currentProject = route.screen === "project" ? fullLibrary?.projects.find(p=>p.id===route.id) || library.projects.find(p => p.id === route.id) : undefined;
   const currentSection = route.screen === "section" ? library.sections.find(s => s.id === route.id) : library.sections.find(s => s.id === currentProject?.sectionId);
   const dirty = !!draft && JSON.stringify(draft) !== JSON.stringify(currentProject);
+  const blockDraft=useBlockDraft(cloudScope || "local",route.screen==="project"?route.id:undefined,draft,pendingMedia,dirty,saving || importingMedia);
   dirtyRef.current = dirty;
   routeRef.current = route;
 
@@ -319,26 +323,37 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
     try { localStorage.setItem("idea-bank.sidebar-collapsed", String(collapsed)); } catch { /* The toggle still works for this session. */ }
   }
 
-  function cancelEditing() {
-    if (importingRef.current) return;
+  async function cancelEditing() {
+    if (importingRef.current || savingRef.current) return;
     if (!dirty || window.confirm(t("Отменить изменения идеи?"))) {
-      setDraft(null); setScrollTarget(returnBlock.current); returnBlock.current = null;
+      savingRef.current=true;setSaving(true);
+      try{await blockDraft.clear();setDraft(null);setScrollTarget(returnBlock.current);returnBlock.current=null;}
+      catch(reason){setStorageError(t((reason as Error).message));}
+      finally{savingRef.current=false;setSaving(false);}
     }
   }
 
   async function editBlock(id: string) {
-    if (!currentProject || readOnly) return;
+    if (!currentProject || readOnly || savingRef.current) return;
     try {
       const full=await prepareEdit({kind:"idea",id:currentProject.id}), project=full.projects.find(idea=>idea.id===currentProject.id);
+      savingRef.current=true;setSaving(true);
       if(!project)throw new Error(t("Идея не найдена."));
+      if(!await blockDraft.start(project))return;
       returnBlock.current = id; setDraft(structuredClone(project)); setScrollTarget(id);
     } catch(reason){setStorageError(reason instanceof Error?reason.message:String(reason));}
+    finally{savingRef.current=false;setSaving(false);}
   }
 
   async function addBlock() {
-    if (!currentProject || readOnly || saving) return;
+    if (!currentProject || readOnly || saving || savingRef.current) return;
     let project = draft;
-    if(!project)try{project=(await prepareEdit({kind:"idea",id:currentProject.id})).projects.find(idea=>idea.id===currentProject.id)||null;}catch(reason){setStorageError(reason instanceof Error?reason.message:String(reason));return;}
+    if(!project)try{
+      project=(await prepareEdit({kind:"idea",id:currentProject.id})).projects.find(idea=>idea.id===currentProject.id)||null;
+      savingRef.current=true;setSaving(true);
+      if(!project || !await blockDraft.start(project))return;
+    }catch(reason){setStorageError(reason instanceof Error?reason.message:String(reason));return;}
+    finally{savingRef.current=false;setSaving(false);}
     if(!project)return;
     const id = createId();
     returnBlock.current = id;
@@ -363,10 +378,29 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
       const referenced = new Set(mediaIds(saved.blocks));
       await saveMediaFiles(new Map([...pendingMedia].filter(([id]) => referenced.has(id))));
       savingRef.current = false;
-      if (await commit({ ...library, projects: library.projects.map(p => p.id === saved.id ? saved : p) }, t("Идея и медиа сохранены в этом браузере."))) { setDraft(null); setScrollTarget(returnBlock.current); returnBlock.current = null; }
+      if (await commit({ ...library, projects: library.projects.map(p => p.id === saved.id ? saved : p) }, t("Идея и медиа сохранены в этом браузере."))) {
+        try{await blockDraft.clear();}catch(reason){setStorageError(t((reason as Error).message));}
+        setDraft(null); setScrollTarget(returnBlock.current); returnBlock.current = null;
+      }
     } catch { setMediaError(t("Не удалось сохранить медиа: возможно, закончилось место или браузер запретил хранение файлов. Текст и файлы остались в редакторе — попробуй сохранить ещё раз.")); }
     finally { savingRef.current = false; setSaving(false); }
   }
+
+  async function restoreDraft(confirmed=false) {
+    const record=draftReview?.record || blockDraft.recovery;if(!record || readOnly || savingRef.current)return;
+    try{
+      const full=await prepareEdit({kind:"idea",id:record.id}),current=full.projects.find(idea=>idea.id===record.id);
+      savingRef.current=true;setSaving(true);
+      if(!current)throw new Error(t("Идея не найдена."));
+      const changed=!equal(record.base.blocks,current.blocks);
+      if(changed && (!confirmed || !draftReview || !equal(draftReview.current.blocks,current.blocks))){setDraftReview({record,current});return;}
+      if(!await blockDraft.start(current,record))return;
+      setPendingMedia(new Map(record.files));setDraft({...structuredClone(current),blocks:structuredClone(record.project.blocks)});
+      setDraftReview(null);returnBlock.current=record.project.blocks[0]?.id || null;setScrollTarget(returnBlock.current);
+    }catch(reason){setStorageError(t((reason as Error).message));}
+    finally{savingRef.current=false;setSaving(false);}
+  }
+  async function discardDraft(){try{await blockDraft.discard();setDraftReview(null);}catch(reason){setStorageError(t((reason as Error).message));await blockDraft.discover();}}
 
   async function removeSection(section: Section) {
     if (!await commit({ ...library, sections: library.sections.filter(s => s.id !== section.id), projects: library.projects.filter(p => p.sectionId !== section.id) }, t("Раздел удалён."))) return;
@@ -435,6 +469,12 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
       {storageError && <div className="storage-warning" role="alert"><CircleAlert /><p>{t(storageError)}</p></div>}
       {cloudScope && (!reader.online || reader.offline) && <div className="offline-status" role="status">{t("Офлайн · сохранённая версия")}</div>}
       {!ready ? <main className="page-content loading"><span className="eyebrow">IDEA BANK</span><h1>{t("Открываем библиотеку…")}</h1></main> : <main className={`page-content ${route.screen === "project" ? "project-page" : route.screen === "section" ? "section-page" : "library-page"}`}>
+        {route.screen==="project" && !draft && blockDraft.recovery && <section className="draft-recovery" aria-label={t("Локальный черновик")}>
+          <div><strong>{t("Есть несохранённый черновик")}</strong><p>{t("Черновик хранится только на этом устройстве. Восстановить его для редактирования?")}</p></div>
+          <div className="draft-recovery-actions"><button className="primary-button" disabled={saving || readOnly} onClick={()=>void restoreDraft()}>{t("Восстановить черновик")}</button><button className="secondary-button" disabled={saving} onClick={()=>void discardDraft()}>{t("Удалить черновик")}</button></div>
+        </section>}
+        {route.screen==="project" && blockDraft.error && <p className="backup-error" role="alert">{t("Не удалось сохранить или прочитать черновик.")} {t(blockDraft.error)}</p>}
+        {draft && <p className="draft-status" role="status">{t(blockDraft.status==="saved"?"Черновик сохранён на устройстве":blockDraft.status==="waiting"?"Сохраняем черновик…":"Изменения отправятся в библиотеку после сохранения идеи.")}</p>}
         {(route.screen==="project" && !draft && !prepared && (!reader.detail?.idea || reader.detail.loading)) ? <div className="reader-state" role="status"><p>{t(reader.detail?.error || "Загружаем идею…")}</p>{reader.detail?.conflict && <button className="primary-button" onClick={()=>void reviewConflict(reader.detail!.conflict!)}>{t("Разрешить конфликт")}</button>}<button className="secondary-button" onClick={reader.refresh}>{t("Повторить загрузку")}</button><button className="back-button" onClick={()=>navigate({screen:"home"})}>{t("Библиотека")}</button></div> : missing && !reader.main.loading ? <div className="empty-state"><Folder /><h1 ref={heading} tabIndex={-1}>{t("Здесь пока ничего нет")}</h1><p>{t("Возможно, эта идея или раздел уже удалены.")}</p><button className="primary-button" onClick={() => navigate({ screen: "home" })}>{t("К библиотеке")}</button></div> : route.screen === "project" && currentProject ? <>
           <div className="project-toolbar"><button className="back-button" onClick={() => navigate({ screen: "section", id: currentProject.sectionId })}><ArrowLeft />{currentSection?.name}</button><div className="project-actions">{!draft && <><button className="edit-button page-action-button" disabled={readOnly} onClick={() => void openModal({ type: "edit-project", project: currentProject })}><Pencil />{t("Изменить")}</button><DropdownMenu label={t("Действия с идеей")} disabled={readOnly} items={[
             { label: t("Перенести в раздел"), icon: <FolderInput />, onSelect: () => void openModal({ type: "move-project", project: currentProject }) },
@@ -462,6 +502,11 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
 
         </>}
       </main>}
+      {draftReview && <Dialog title={t("Идея изменилась после создания черновика")} onClose={()=>setDraftReview(null)} closeDisabled={saving}>
+        <p className="dialog-description">{t("Сравните версии перед восстановлением. Черновик откроется для редактирования; текущие блоки будут заменены только после нажатия «Сохранить».")}</p>
+        <div className="draft-comparison"><section><h3>{t("Текущие блоки")}</h3><pre>{draftReview.current.blocks.map(block=>[block.heading,block.text,...(block.media || []).map(file=>file.name)].filter(Boolean).join("\n")).join("\n\n")}</pre></section><section><h3>{t("Локальный черновик")}</h3><pre>{draftReview.record.project.blocks.map(block=>[block.heading,block.text,...(block.media || []).map(file=>file.name)].filter(Boolean).join("\n")).join("\n\n")}</pre></section></div>
+        <div className="form-actions"><button className="secondary-button" disabled={saving} onClick={()=>setDraftReview(null)}>{t("Отмена")}</button><button className="primary-button" disabled={saving} onClick={()=>void restoreDraft(true)}>{t("Восстановить черновик")}</button></div>
+      </Dialog>}
       <div className="notice" role="status" aria-live="polite">{t(message)}</div>
       <footer className="app-footer"><span><LockKeyhole />{t("Личная библиотека")}</span><button onClick={() => void openModal({ type: "storage-info" })}>{cloudScope ? t("Синхронизация и копии") : t("Локальная версия")} <ArrowUpRight /></button></footer>
     </div>
