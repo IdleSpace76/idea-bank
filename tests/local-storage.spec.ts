@@ -1,8 +1,66 @@
 import { test, expect } from "@playwright/test";
-import { demoLibrary, type Library } from "../lib/ideas";
+import { demoLibrary, type IdeaSummary, type Library } from "../lib/ideas";
 import { deleteLocalDatabase, exposeLibraryStore, readStoredLibrary, setStoredLibrary } from "./local-fixture";
 const modulePath = "/__local_fixture__/library-store.js";
 const fixture = (): Library => ({ version: 1, sections: [{ id: "s", name: "Personal", description: "", icon: "folder" }], projects: [{ ...demoLibrary.projects[0], id: "personal", sectionId: "s", name: "Personal idea", blocks: [{ id: "b", heading: "Heading", text: "Keep me" }] }] });
+
+test("catalog pages read only requested metadata; opening an idea reads only its blocks", async ({ page }) => {
+  await page.goto("/"); await expect(page.locator("main h1")).toBeVisible(); await exposeLibraryStore(page);
+  const library = fixture();
+  library.projects = Array.from({ length: 61 }, (_, index) => ({ ...library.projects[0], id: `idea-${index}`, name: `Idea ${index}`,
+    blocks: [{ id: "b", heading: "Heading", text: `Body ${index}` }, { id: "second", heading: "", text: "Second body" }] }));
+  await setStoredLibrary(page, library);
+  // Measure the storage API independently of the application's background sidebar reads.
+  await page.goto("/__storage_probe__");
+  const result = await page.evaluate(async path => {
+    const store = await import(path);
+    const reads: { store: string; key: unknown }[] = [];
+    const original = IDBObjectStore.prototype.get;
+    IDBObjectStore.prototype.get = function(key) { reads.push({ store: this.name, key }); return original.call(this, key); };
+    try {
+      const sections = await store.readLocalSections(); const sectionReads = reads.splice(0);
+      const first = await store.readLocalCatalogPage(); const firstReads = reads.splice(0);
+      const second = await store.readLocalCatalogPage({ cursor: first.nextCursor });
+      const third = await store.readLocalCatalogPage({ cursor: second.nextCursor }); reads.splice(0);
+      const detail = await store.readLocalIdea("idea-29"); const detailReads = reads.splice(0);
+      const missing = await store.readLocalIdea("missing");
+      return { sections, sectionReads, first, second, third, firstReads, detail, detailReads, missing };
+    } finally { IDBObjectStore.prototype.get = original; }
+  }, modulePath);
+  expect(result.sections.sections).toEqual(library.sections);
+  expect(result.sectionReads.map(r => r.store)).toEqual(["meta", "sections"]);
+  expect([result.first.ideas.length, result.second.ideas.length, result.third.ideas.length]).toEqual([24, 24, 13]);
+  expect([...result.first.ideas, ...result.second.ideas, ...result.third.ideas].map(idea => idea.id)).toEqual(library.projects.map(idea => idea.id));
+  expect(result.first.ideas.every((idea: IdeaSummary) => !Object.hasOwn(idea, "blocks"))).toBe(true);
+  expect(result.firstReads.filter(r => r.store === "ideas")).toHaveLength(24);
+  expect(result.firstReads.some(r => r.store === "blocks" || r.store === "media")).toBe(false);
+  expect(result.third.nextCursor).toBeNull();
+  expect(result.detail.idea).toEqual(library.projects[29]);
+  expect(result.detailReads.filter(r => r.store === "ideas").map(r => r.key)).toEqual(["idea-29"]);
+  expect(result.detailReads.filter(r => r.store === "blocks").map(r => r.key)).toEqual(['["idea-29","b"]', '["idea-29","second"]']);
+  expect(result.detailReads.some(r => r.store === "media")).toBe(false);
+  expect(result.missing).toBeNull();
+  expect(await page.evaluate(readStoredLibrary)).toEqual(library);
+});
+
+test("catalog pagination rejects stale cursors and invalid bounds without changing data", async ({ page }) => {
+  await page.goto("/"); await expect(page.locator("main h1")).toBeVisible(); await exposeLibraryStore(page);
+  const result = await page.evaluate(async path => {
+    const store = await import(path), initial = await store.readLocalSnapshot();
+    const failed = async (work: () => Promise<unknown>) => { try { await work(); return false; } catch { return true; } };
+    const invalid = await Promise.all([0, -1, 101, 1.5, NaN].map(limit => failed(() => store.readLocalCatalogPage({ limit }))));
+    const badCursor = await failed(() => store.readLocalCatalogPage({ cursor: { offset: -1, revision: initial.revision } }));
+    const empty = await store.readLocalCatalogPage({ cursor: { offset: 100, revision: initial.revision } });
+    const next = structuredClone(initial.library); next.projects[0].description = "Changed during pagination";
+    await store.saveLocalLibrary(next, initial.library);
+    const stale = await failed(() => store.readLocalCatalogPage({ cursor: { offset: 0, revision: initial.revision } }));
+    return { invalid, badCursor, empty, stale, fresh: await store.readLocalCatalogPage(), full: await store.readLocalLibrary() };
+  }, modulePath);
+  expect(result.invalid).toEqual([true, true, true, true, true]); expect(result.badCursor).toBe(true); expect(result.stale).toBe(true);
+  expect(result.empty.ideas).toEqual([]); expect(result.empty.nextCursor).toBeNull();
+  expect(result.fresh.ideas[0].description).toBe("Changed during pagination");
+  expect(result.full.projects[0].blocks).toEqual(demoLibrary.projects[0].blocks);
+});
 
 test("starter provenance survives reload but not user saves, even when the content is unchanged", async ({ page }) => {
   await page.goto("/");await expect(page.locator(".project-card > strong")).toHaveText("Example");await exposeLibraryStore(page);

@@ -20,16 +20,23 @@ export type MediaKind = "image" | "video" | "audio" | "model";
 export type MediaDisplaySize = { width: number; height: number };
 export type MediaAsset = { id: string; name: string; kind: MediaKind; mime: string; size: number; displaySize?: MediaDisplaySize };
 export type TextBlock = { id: string; heading: string; headingFontSize?: number; text: string; richText?: RichDocument; textPosition?: "above" | "below"; width?: BlockWidth; media?: MediaAsset[] };
-export type Project = {
+/** Card metadata, without the idea's blocks or attachment contents. */
+export type IdeaSummary = {
   id: string;
   sectionId: string;
   name: string;
   description: string;
   cover: Cover;
   coverImage?: MediaAsset;
-  blocks: TextBlock[];
   updatedAt: string;
 };
+export type IdeaContent = { id: string; blocks: TextBlock[] };
+export type Project = IdeaSummary & IdeaContent;
+
+export function summarizeIdea(idea: IdeaSummary): IdeaSummary {
+  return { id: idea.id, sectionId: idea.sectionId, name: idea.name, description: idea.description,
+    cover: idea.cover, ...(idea.coverImage ? { coverImage: idea.coverImage } : {}), updatedAt: idea.updatedAt };
+}
 export type Library = { version: 1; sections: Section[]; projects: Project[] };
 export type Route = { screen: "home" } | { screen: "section"; id: string } | { screen: "project"; id: string };
 

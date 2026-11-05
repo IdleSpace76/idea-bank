@@ -41,7 +41,7 @@ async function withServer(mode, run) {
     assert.ok(ready, "Isolated server starts");
     await run(origin);
   } finally {
-    child.kill();
+    child.kill("SIGKILL");
     await new Promise(resolve => { if (child.exitCode !== null) resolve(); else child.once("exit", resolve); });
   }
 }
@@ -61,7 +61,7 @@ await withServer("github", async origin => {
     assert.ok(response.headers.get("cache-control").includes("no-store"));
     assert.equal((await fetch(`${origin}/api/storage/${path}`, { method, headers: { Cookie: await sessionCookie("67890") } })).status, 401, "Other accounts cannot access storage");
   }
-  for (const [path,method] of [["sync","GET"],["sync","POST"],["sync","PUT"],["sync/media","GET"],["sync/events/token","POST"]]) {
+  for (const [path,method] of [["sync/scoped","POST"],["sync/scoped","PUT"],["catalog","GET"],["catalog/media?id=bad","GET"],["ideas/example","GET"],["sync","GET"],["sync","POST"],["sync","PUT"],["sync/media","GET"],["sync/events/token","POST"]]) {
     const response=await fetch(`${origin}/api/${path}`,{method}); assert.equal(response.status,401);
     assert.equal((await fetch(`${origin}/api/${path}`,{method,headers:{Cookie:await sessionCookie("67890")}})).status,401);
     if(method!=="GET")assert.equal((await fetch(`${origin}/api/${path}`,{method,headers:{Cookie:ownerCookie,Origin:"https://other.example","Content-Type":"application/json"},body:"{}"})).status,403);
@@ -75,7 +75,7 @@ await withServer("github", async origin => {
   const tokenClaims = JSON.parse(Buffer.from(eventToken.token.split(".")[1], "base64url"));
   assert.deepEqual(JSON.parse(tokenClaims["x-ably-capability"]), { [eventToken.channel]: ["subscribe"] }, "Caller cannot choose a channel or escalate token permissions");
   assert.ok(!JSON.stringify(eventToken).includes("synthetic-secret"));
-  for(const method of ["POST","PUT"])assert.equal((await fetch(`${origin}/api/sync`,{method,headers:{Cookie:ownerCookie,Origin:origin,"Content-Type":"application/json"},body:"{}"})).status,400);
+  for(const path of ["sync","sync/scoped"])for(const method of ["POST","PUT"])assert.equal((await fetch(`${origin}/api/${path}`,{method,headers:{Cookie:ownerCookie,Origin:origin,"Content-Type":"application/json"},body:"{}"})).status,400);
   const write = (path, body, extra = {}) => fetch(`${origin}/api/storage/${path}`, { method: path === "library" ? "PUT" : "POST", headers: { Cookie: ownerCookie, Origin: origin, "Content-Type": "application/json", ...extra }, body });
   assert.equal((await write("library", "{}", { Origin: "https://example.org" })).status, 403, "Foreign origin is denied before storage access");
   assert.equal((await write("library", "{}", { "sec-fetch-site": "cross-site" })).status, 403);
@@ -111,6 +111,8 @@ await withServer("github", async origin => {
   try {
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }, { width: 320, height: 844 }]) {
       const context = await browser.newContext({ viewport });
+      await context.route("**/api/catalog**",route=>route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:{code:"UNAVAILABLE",message:"Fixture storage unavailable"}})}));
+      await context.route("**/api/sync/events/token",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({enabled:false})}));
       const page = await context.newPage();
       await page.goto(origin);
       await page.getByRole("button", { name: "Sign in with GitHub" }).waitFor();
@@ -143,5 +145,6 @@ await withServer("local", async origin => {
   assert.ok(page.includes("Opening your library") && !page.includes("Sign in with GitHub"));
   assert.equal((await fetch(`${origin}/api/auth/session`)).status, 404);
   assert.equal((await fetch(`${origin}/api/sync/events/token`, { method: "POST", headers: { Origin: origin } })).status, 401, "Local mode cannot issue event tokens");
+  for (const path of ["catalog","ideas/example"]) assert.equal((await fetch(`${origin}/api/${path}`)).status,401,"Local mode cannot access cloud catalogs");
 });
 console.log("Auth checks passed: configuration, owner gate, PKCE/state, session tampering, logout and local mode. OAuth exchange with GitHub needs real App credentials.");

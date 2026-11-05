@@ -18,8 +18,6 @@ export async function registerCloudCache(tx: IDBTransaction, checkpoint: SyncChe
 /** Runs inside the same transaction as cache writes, including in other tabs. */
 export async function pruneCacheIn(tx: IDBTransaction, scope: string, limit: number) {
   const meta = tx.objectStore("meta"), entries: CacheState = await request(meta.get(cacheKey)) || {};
-  const checkpoint = await request<SyncCheckpoint | undefined>(meta.get("sync-v2"));
-  if (checkpoint?.scope !== scope) return;
   const candidates = Object.entries(entries).filter(([, entry]) => entry.scope === scope).sort((a,b) => a[1].used - b[1].used);
   let size = candidates.reduce((sum, [, entry]) => sum + entry.size, 0);
   for (const [id, entry] of candidates) {

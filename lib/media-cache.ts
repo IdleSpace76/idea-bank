@@ -30,6 +30,8 @@ export async function getMediaFile(id: string, scope?: string): Promise<Blob | u
     return local;
   }
   if (!scope) return;
+  const alias=(await readMeta<Record<string,import("./cloud-library").CloudMedia>>("scoped-media-aliases"))?.[id];
+  if(alias && alias.id!==id)return getMediaFile(alias.id,scope);
   const key = JSON.stringify([scope,id]), existing = downloads.get(key);
   if (existing) return existing;
   const task = downloadSlot(()=>fetchMedia(id,scope)); downloads.set(key, task);
@@ -38,20 +40,23 @@ export async function getMediaFile(id: string, scope?: string): Promise<Blob | u
 
 async function fetchMedia(id: string, scope: string): Promise<Blob | undefined> {
   const checkpoint = await readMeta<SyncCheckpoint>("sync-v2"), key = entityKey("media",id);
-  if (checkpoint?.scope !== scope || checkpoint.index[key]?.length !== 1 || !checkpoint.values[key]) return;
-  const file = parseCloudMedia(checkpoint.values[key]);
-  if (contentId(file) !== id) return;
-  const response = await fetch(`/api/sync/media?key=${encodeURIComponent(key)}&revision=${checkpoint.index[key][0]}`, { credentials:"same-origin",cache:"no-store",signal:AbortSignal.timeout(120000) });
+  const known = checkpoint?.scope === scope && checkpoint.index[key]?.length === 1 && checkpoint.values[key];
+  const path = known ? `/api/sync/media?key=${encodeURIComponent(key)}&revision=${checkpoint!.index[key][0]}` : `/api/catalog/media?id=${encodeURIComponent(id)}`;
+  const response = await fetch(path, { credentials:"same-origin",cache:"no-store",signal:AbortSignal.timeout(120000) });
   if (!response.ok) throw new Error(t(response.status === 401 ? "Сессия истекла. Сохрани правки и войди через GitHub снова." : "Не удалось получить вложение из облака."));
-  const signed = await response.json(), blob = await downloadCloudMedia(file,signed.url);
+  const signed = await response.json(), file = parseCloudMedia(known || signed.media);
+  if (contentId(file) !== id) throw new Error(t("Не удалось получить вложение из облака."));
+  const blob = await downloadCloudMedia(file,signed.url);
   // Oversized files can be viewed without forcing them into the persistent cache.
   if (blob.size <= MEDIA_CACHE_LIMIT) {
     await transaction(["meta","media"],"readwrite",async tx => {
-      const meta=tx.objectStore("meta"), current=await request<SyncCheckpoint|undefined>(meta.get("sync-v2"));
-      if(current?.scope!==scope || !current.values[key])return;
-      await pruneCacheIn(tx,scope,MEDIA_CACHE_LIMIT-blob.size);
+      const meta=tx.objectStore("meta");
+      // Never turn an independently saved local original into an evictable cache entry.
       const entries:CacheState=await request(meta.get(cacheKey))||{};
-      tx.objectStore("media").put(blob,id); entries[id]={scope,size:blob.size,used:Date.now()}; meta.put(entries,cacheKey);
+      if(await request(tx.objectStore("media").getKey(id)) && !entries[id])return;
+      await pruneCacheIn(tx,scope,MEDIA_CACHE_LIMIT-blob.size);
+      const next:CacheState=await request(meta.get(cacheKey))||{};
+      tx.objectStore("media").put(blob,id); next[id]={scope,size:blob.size,used:Date.now()}; meta.put(next,cacheKey);
     }).catch(() => { /* A full/disabled cache must not prevent viewing a verified cloud file. */ });
   }
   return blob;

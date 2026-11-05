@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import ts from "typescript";
 const directory = new URL("../.cache/entity-check/",import.meta.url);
 await mkdir(directory,{ recursive:true });
-for (const name of ["example-media","rich-text","ideas","cloud-library","b2-storage","entity-sync","entity-storage","i18n","translations","library-store","local-database","cloud-state","media-store","cloud-sync","entity-client","media-cache-store"]) {
+for (const name of ["example-media","rich-text","ideas","cloud-library","b2-storage","entity-sync","entity-storage","catalog-storage","i18n","translations","library-store","local-database","cloud-state","media-store","cloud-sync","entity-client","media-cache-store","scoped-types","scoped-store","scoped-client","scoped-overlay","reader-cache"]) {
   const source = await readFile(new URL(`../lib/${name}.ts`,import.meta.url),"utf8");
   await writeFile(new URL(`${name}.js`,directory),ts.transpileModule(source,{ compilerOptions:{ module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true } }).outputText);
 }
@@ -24,6 +24,7 @@ export function memoryStorage() {
       if (objects.has(input.Key)) { if (String(objects.get(input.Key).body) !== String(input.Body)) throw new Error("Immutable object overwritten"); }
       objects.set(input.Key,{ body:input.Body,type:input.ContentType,metadata:input.Metadata,md5:createHash("md5").update(input.Body).digest("hex") }); puts.push(input.Key); return {};
     }
+    if (name === "DeleteObjectCommand") { objects.delete(input.Key); return {}; }
     const object=objects.get(input.Key); if (!object) { const error = new Error("Missing fixture object"); error.name="NotFound"; throw error; }
     if (name === "HeadObjectCommand") return { ContentLength:Buffer.byteLength(object.body),ContentType:object.type,Metadata:object.metadata,ETag:`"${object.md5}"` };
     if (name === "GetObjectCommand") { getCount++; return { ContentLength:Buffer.byteLength(object.body),Body:{ transformToString:async()=>String(object.body) } }; }

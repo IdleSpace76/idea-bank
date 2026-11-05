@@ -3,6 +3,8 @@ import { GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCom
 import { B2Storage } from "./b2-storage";
 import { MAX_CLOUD_JSON_BYTES, StorageError, invalid, parseCloudSnapshot, revisionPattern, type CloudMedia } from "./cloud-library";
 import { canonicalLibrary, contentId, entityKey, equal, flattenLibrary, keyParts, parseEntity, stable, type EntityChange, type EntityValue, type EntityIndex, type EntityRead, type EntityVersion } from "./entity-sync";
+import { CatalogStorage } from "./catalog-storage";
+import type { ScopedRead, SyncTarget } from "./scoped-types";
 
 type Manifest = { format: "idea-bank-index"; version: 2; revision: string; parents: string[]; index: EntityIndex; digest: string; legacy?: string };
 type Graph = Map<string, { key: string; parents: string[]; legacy?: string }>;
@@ -14,6 +16,7 @@ export class EntityStorage {
   private manifests = new Map<string, Manifest>();
   private legacyParents = new Map<string,string[]>();
   constructor(readonly storage: B2Storage) { this.prefix = `${storage.prefix}/sync-v2`; }
+  catalog() { return new CatalogStorage(this); }
   private versionKey(key: string, revision: string) { return `${this.prefix}/records/${hash(key)}/${revision}.json`; }
   private manifestKey(parents: string[], id: string, legacy?: string) { return `${this.prefix}/indexes/${legacy ? `${legacy}~` : ""}${parents.join("+") || "root"}_${id}.json`; }
   private async getJson(key: string): Promise<unknown | null> {
@@ -148,6 +151,7 @@ export class EntityStorage {
       }));
       const manifest: Manifest={format:"idea-bank-index",version:2,revision,parents,index,legacy:id,digest:hash(`legacy:${id}`)};
       const key=this.manifestKey(parents,revision,id); await this.putImmutable(key,manifest); this.manifests.set(revision,manifest); graph.set(revision,{key,parents,legacy:id});
+      await this.catalog().publish(revision,parents);
     }
   }
   async status() {
@@ -159,7 +163,60 @@ export class EntityStorage {
     else { const legacy=await this.storage.listRevisions(); this.legacyParents=new Map([...legacy.revisions].map(([id,entry])=>[id,entry.parents])); }
     const graph = await this.graph(), heads = this.heads(graph), index = await this.index(heads,graph), records: EntityVersion[] = [];
     for (const [key, versions] of Object.entries(index)) if (!equal(known[key],versions)) for (const revision of versions) records.push(await this.version(key,revision));
+    // Repair a frontier publication interrupted after the authoritative manifest was committed.
+    for (const head of heads) await this.catalog().publish(head,graph.get(head)!.parents);
     return { heads, index, records };
+  }
+  /** Build a read projection once per frontier, without downloading block bodies. */
+  async catalogIndex(frontier?: string[]): Promise<{ heads: string[]; index: EntityIndex }> {
+    const legacy = await this.storage.listRevisions();
+    this.legacyParents = new Map([...legacy.revisions].map(([id,entry]) => [id,entry.parents]));
+    const graph = await this.graph();
+    if (legacy.revisions.size && !graph.size) throw new StorageError(409,"MIGRATION_REQUIRED","Требуется переход на новую синхронизацию.");
+    const candidates = frontier ?? this.heads(graph);
+    if (!uuids(candidates) || candidates.some(id => !graph.has(id))) throw new StorageError(409,"STALE_INDEX","Облачный индекс изменился.");
+    const heads = candidates.filter(id => !candidates.some(other => id !== other && this.ancestor(id,other,graph))).sort();
+    return { heads, index: await this.index(heads,graph) };
+  }
+  /** Read one edit/conflict domain. Unrelated idea bodies never leave storage. */
+  async readScoped(target: SyncTarget, includeIdeas: string[] = [],includeMedia:string[]=[]): Promise<ScopedRead> {
+    if (!target || !["idea","section","section-tree"].includes(target.kind) || typeof target.id!=="string" || !target.id || target.id.length>200 || !Array.isArray(includeIdeas) || includeIdeas.length>10000 || includeIdeas.some(id=>typeof id!=="string" || !id || id.length>200)) return invalid();
+    if(!Array.isArray(includeMedia) || includeMedia.length>10000 || includeMedia.some(id=>typeof id!=="string" || !/^[a-f0-9]{64}-[a-f0-9]{32}$/.test(id)))return invalid();
+    const source=await this.catalogIndex(), selected=new Set<string>(), records=new Map<string,EntityVersion>();
+    const load=async(key:string)=>{
+      selected.add(key);
+      const values=await Promise.all((source.index[key] || []).map(async revision=>{
+        const identity=JSON.stringify([key,revision]);
+        if(!records.has(identity))records.set(identity,await this.version(key,revision));
+        return records.get(identity)!;
+      }));return values;
+    };
+    const ideas=new Set(includeIdeas);
+    if(target.kind==="idea")ideas.add(target.id);
+    if(target.kind==="section")await load(entityKey("section",target.id));
+    else {
+      for(const key of Object.keys(source.index))if(keyParts(key).kind==="section")await load(key);
+      if(target.kind==="section-tree") {
+        await load(entityKey("section",target.id));
+        const keys=Object.keys(source.index).filter(key=>keyParts(key).kind==="idea");
+        for(let n=0;n<keys.length;n+=12)await Promise.all(keys.slice(n,n+12).map(async key=>{
+          const values=await Promise.all(source.index[key].map(id=>this.version(key,id)));
+          if(values.some(record=>[record.value,...(record.previous || [])].some(value=>value && "sectionId" in value && value.sectionId===target.id)))ideas.add(keyParts(key).ids[0]);
+        }));
+      }
+      for(const id of ideas)await load(entityKey("idea",id));
+      const blockKeys=Object.keys(source.index).filter(key=>{const part=keyParts(key);return part.kind==="block" && ideas.has(part.ids[0]);});
+      for(let n=0;n<blockKeys.length;n+=12)await Promise.all(blockKeys.slice(n,n+12).map(load));
+      const media=new Set<string>();
+      for(const record of records.values())if(record.value){
+        const value=record.value as {coverImage?:{id:string};media?:{id:string}[]};
+        if(value.coverImage)media.add(value.coverImage.id);
+        for(const file of value.media || [])media.add(file.id);
+      }
+      for(const id of media)await load(entityKey("media",id));
+    }
+    for(const id of includeMedia)await load(entityKey("media",id));
+    return {target,heads:source.heads,index:Object.fromEntries([...selected].filter(key=>source.index[key]).map(key=>[key,source.index[key]])),records:[...records.values()]};
   }
   async save(input: unknown): Promise<{ revision: string }> {
     if (!input || typeof input !== "object") return invalid();
@@ -172,7 +229,7 @@ export class EntityStorage {
     await this.migrateLegacy();
     await this.putImmutable(`${this.prefix}/legacy-lock.json`, { format: "idea-bank-sync-v2" });
     const graph = await this.graph();
-    if (graph.has(revision)) { if ((await this.manifest(revision,graph)).digest !== digest) throw new StorageError(409,"OPERATION_REUSED","Идентификатор операции уже использован."); return { revision }; }
+    if (graph.has(revision)) { if ((await this.manifest(revision,graph)).digest !== digest) throw new StorageError(409,"OPERATION_REUSED","Идентификатор операции уже использован."); await this.catalog().publish(revision,parents); return { revision }; }
     const current = await this.index(this.heads(graph),graph), index = await this.index(parents,graph);
     for (const change of changes) {
       if (!equal(current[change.key] || [], change.base)) throw new StorageError(409,"STALE_INDEX","Запись изменилась на другом устройстве. Повтори синхронизацию.");
@@ -225,6 +282,7 @@ export class EntityStorage {
     }));
     const manifest: Manifest = { format: "idea-bank-index", version: 2, revision, parents, index, digest };
     await this.putImmutable(this.manifestKey(parents,revision),manifest);
+    await this.catalog().publish(revision,parents);
     return { revision };
   }
   private identity(value: string) {

@@ -22,7 +22,7 @@ type Operation = { scope: string; body: { operationId: string; heads: string[]; 
 export type EntityPlan = { scope: string; expected: Library; local: EntityMap; base: EntityMap; remote: EntityMap; recovery?: Record<string,EntityValue[]>; variants: Record<string, (EntityValue | null)[]>; read: EntityRead; sources: CloudMedia[]; first: boolean; resolveMode?: "merge" | "cloud"; resolvedChoices?: SyncChoices; completedOperation?: string; conflicts: MergeConflict[] };
 export type SyncChoices = Record<string, number>;
 function versionIds(value: unknown): value is string[] { return Array.isArray(value) && value.length <= 16 && value.every(id => typeof id === "string" && revisionPattern.test(id)) && new Set(value).size === value.length; }
-function validateRead(value: EntityRead, known: EntityIndex, previous: EntityMap, oldRecovery: Record<string,EntityValue[]> = {}): { remote: EntityMap; recovery?: Record<string,EntityValue[]>; variants: Record<string,(EntityValue | null)[]> } {
+export function validateRead(value: EntityRead, known: EntityIndex, previous: EntityMap, oldRecovery: Record<string,EntityValue[]> = {}): { remote: EntityMap; recovery?: Record<string,EntityValue[]>; variants: Record<string,(EntityValue | null)[]> } {
   if (!value || !versionIds(value.heads) || !value.index || typeof value.index !== "object" || Array.isArray(value.index) || !Array.isArray(value.records)) throw new SyncError("Неполный ответ истории облака.");
   const records = new Map<string, EntityValue | null>(), recovery = { ...oldRecovery };
   for (const record of value.records) {
@@ -115,11 +115,14 @@ export function resolvePlan(plan: EntityPlan, choices: SyncChoices = {}, mode: "
   }
   return { values, conflicts };
 }
-async function localMedia(library: Library, checkpoint: SyncCheckpoint | null): Promise<CloudMedia[]> {
+export async function localMedia(library: Library, checkpoint: SyncCheckpoint | null): Promise<CloudMedia[]> {
   const files: CloudMedia[] = [];
   const cache=await readMeta<CacheState>(cacheKey)||{};
   const knownFiles=new Map(checkpoint?.files.map(file=>[file.id,file])||[]);
+  const aliases=await readMeta<Record<string,CloudMedia>>("scoped-media-aliases") || {};
   for (const asset of libraryAssets(library).values()) {
+    const alias=aliases[asset.id];
+    if(alias && alias.size===asset.size && alias.mime===asset.mime && !await readMediaFile(asset.id)){files.push({...alias,id:asset.id});continue;}
     const candidate=knownFiles.get(asset.id);
     const known=candidate && contentId(candidate)===asset.id && candidate.size===asset.size && candidate.mime===asset.mime ? candidate : undefined;
     if(known && (cache[asset.id]?.scope===checkpoint?.scope || !await transaction(["media"],"readonly",tx=>request(tx.objectStore("media").getKey(asset.id))))){files.push(known);continue;}
@@ -170,7 +173,7 @@ export async function inspectEntitySync(scope: string, library: Library, activat
   plan.conflicts = resolvePlan(plan, {}, plan.resolveMode || "merge").conflicts;
   return plan;
 }
-async function uploadNeeded(plan: EntityPlan, values: EntityMap, changes: EntityChange[], progress: (message: string) => void) {
+export async function uploadNeeded(plan: EntityPlan, values: EntityMap, changes: EntityChange[], progress: (message: string) => void) {
   const needed = new Set<string>();
   for (const change of changes) if (change.value) {
     const kind = keyParts(change.key).kind, v = change.value as unknown as { coverImage?: { id: string }; media?: { id: string }[] };
@@ -181,10 +184,11 @@ async function uploadNeeded(plan: EntityPlan, values: EntityMap, changes: Entity
   for (const id of needed) {
     if (plan.read.index[entityKey("media",id)]) continue;
     const file = parseCloudMedia(values[entityKey("media",id)]);
+    const upload = await api("/api/storage/media/upload",file);
+    if(upload.alreadyUploaded)continue;
     const source = plan.sources.find(f => contentId(f) === id), blob = source ? await readMediaFile(source.id) : await readMediaFile(id);
     if (!blob || !equal(await hashMedia(blob),{ sha256: file.sha256, md5: file.md5 })) throw new SyncError("Не найден исходный файл для синхронизации.");
     progress(t("Отправляем вложение…"));
-    const upload = await api("/api/storage/media/upload",file);
     if (!upload.alreadyUploaded) {
       const response = await fetch(signedUrl(upload.url), { method: "PUT", headers: upload.headers, body: blob, credentials: "omit", signal: AbortSignal.timeout(15*60*1000) });
       if (!response.ok) throw new SyncError("Не удалось загрузить медиа в B2. Проверь связь и CORS хранилища. Локальная библиотека не изменена.","",response.status);

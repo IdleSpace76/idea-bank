@@ -20,7 +20,7 @@ async function prepareExampleBackup(): Promise<LibraryBackup> {
   return { library: structuredClone(demoLibrary), files, createdAt: demoLibrary.projects[0].updatedAt, totalBytes: new TextEncoder().encode(JSON.stringify(demoLibrary)).length + [...files.values()].reduce((sum, file) => sum + file.size, 0) };
 }
 
-export function BackupControls({ scope, library, locked, readOnly, onBusyChange, onRestored }: { scope?: string; library: Library; locked: boolean; readOnly: boolean; onBusyChange: (busy: boolean) => void; onRestored: (library: Library) => void }) {
+export function BackupControls({ scope, library, locked, readOnly, onBusyChange, onRestored, loadLibrary }: { scope?: string; library: Library; locked: boolean; readOnly: boolean; onBusyChange: (busy: boolean) => void; onRestored: (library: Library) => void; loadLibrary?: () => Promise<Library> }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false), [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -44,7 +44,8 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
   async function exportZip() {
     if (readOnly || !begin(t("Собираем библиотеку и медиа в архив…"))) return;
     try {
-      const blob = await createLibraryBackup(library,scope), now = new Date();
+      const source=loadLibrary?await loadLibrary():library;
+      const blob = await createLibraryBackup(source,scope), now = new Date();
       const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}`;
       download(blob, `idea-bank-${stamp}.zip`); setStatus(t("Архив подготовлен и передан браузеру для скачивания."));
     } catch (reason) { setStatus(""); setError(reason instanceof Error ? reason.message : t("Не удалось создать архив.")); }
@@ -53,9 +54,8 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
   async function inspect(file: File) {
     if (!begin(t("Проверяем библиотеку, медиа и целостность архива…"))) return;
     setPreview(null);
-    previewBase.current = structuredClone(library);
     setExamplePreview(false);
-    try { setPreview(await readLibraryBackup(file)); setStatus(t("Архив проверен. Текущая библиотека пока не изменена.")); }
+    try { previewBase.current=structuredClone(loadLibrary?await loadLibrary():library);setPreview(await readLibraryBackup(file)); setStatus(t("Архив проверен. Текущая библиотека пока не изменена.")); }
     catch (reason) { setStatus(""); setError(reason instanceof Error ? reason.message : t("Не удалось прочитать архив.")); }
     finally { finish(); }
   }
@@ -75,10 +75,17 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
   async function previewExample() {
     if (!begin(t("Подготавливаем медиа…"))) return;
     try {
-      previewBase.current = structuredClone(library);
+      previewBase.current = structuredClone(loadLibrary?await loadLibrary():library);
       setPreview(await prepareExampleBackup());
       setExamplePreview(true); setError(""); setStatus(t("Пример подготовлен. Текущая библиотека пока не изменена."));
     } catch { setPreview(null); setError(t("Не удалось загрузить медиа Example. Проверь соединение и попробуй ещё раз.")); }
+    finally { finish(); }
+  }
+  async function requestReset() {
+    if (!loadLibrary) { resetBase.current=structuredClone(library);setResetRequested(true);return; }
+    if (!begin(t("Подготавливаем медиа…"))) return;
+    try { resetBase.current=structuredClone(await loadLibrary());setResetRequested(true); }
+    catch(reason) { setError(reason instanceof Error?reason.message:String(reason)); }
     finally { finish(); }
   }
   /** Reset the active library through the same atomic restore and durable sync queue as ZIP import. */
@@ -101,7 +108,7 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
     </div>
     <div className="backup-buttons backup-reset-buttons">
       <button type="button" className="secondary-button" disabled={busy || locked} onClick={previewExample}><RotateCcw />{t("Загрузить Example")}</button>
-      <button type="button" className="secondary-button danger" disabled={busy || locked || readOnly} onClick={() => { resetBase.current = structuredClone(library); setResetRequested(true); }}><Eraser />{t("Очистить голову")}</button>
+      <button type="button" className="secondary-button danger" disabled={busy || locked || readOnly} onClick={() => { void requestReset(); }}><Eraser />{t("Очистить голову")}</button>
     </div>
     {resetRequested && <dialog ref={resetDialog} className="dialog reset-confirmation" aria-labelledby="reset-library-title" aria-describedby="reset-library-warning" onCancel={event => { event.preventDefault(); event.stopPropagation(); closeReset(); }} onClick={event => { if (event.target === event.currentTarget) closeReset(); }}>
       <div className="dialog-header"><h2 id="reset-library-title">{t("Очистить голову?")}</h2><button type="button" className="icon-button" aria-label={t("Закрыть")} onClick={closeReset}><X /></button></div>

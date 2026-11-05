@@ -10,7 +10,7 @@ import { type EntityValue } from "@/lib/entity-sync";
 import { coverNames, type Library, type TextBlock } from "@/lib/ideas";
 import { FormattedText } from "./formatted-text";
 
-export function CloudSyncControls({ controller, view, library, locked, readOnly }: { controller: SyncController; view: SyncView; library: Library; locked: boolean; readOnly: boolean }) {
+export function CloudSyncControls({ controller, view, library, locked, readOnly }: { controller: Pick<SyncController,"check"|"resolve">; view: SyncView; library: Library; locked: boolean; readOnly: boolean }) {
   const { t } = useI18n();
   const { busy,status,error,lastSync,plan }=view;
   const [choices,setChoices]=useState<SyncChoices>({});

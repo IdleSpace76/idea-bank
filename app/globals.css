@@ -215,6 +215,10 @@ legend { font-size: 12px; color: var(--muted); padding: 0; }
 .new-project-card:hover:not(:disabled) { background: var(--soft); }
 .new-project-card svg { width: 25px; height: 25px; }
 .recent-project, .mobile-brand, .mobile-title, .mobile-back { display: none; }
+.offline-status { padding: 10px clamp(17px, 3.5vw, 72px); background: var(--soft); color: var(--text); border-bottom: 1px solid var(--line); font-size: 15px; }
+.reader-state { margin: 20px 0; color: var(--muted); font-size: 17px; }
+.reader-state button { margin: 8px 12px 0 0; }
+.catalog-sentinel { height: 1px; }
 .empty-inline { color: var(--muted); padding: 22px 0; font-size: 13px; }
 .empty-inline > button { margin-top: 14px; }
 .empty-state { min-height: 420px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 18px; text-align: center; }
@@ -554,7 +558,7 @@ fieldset:disabled .media-upload { opacity: .5; }
   .new-project-card { border-radius: 15px; font-size: 16px; }
   .projects-area { margin-top: 24px; }
   .home-projects { margin-top: 30px; }
-  .home-projects .project-grid, .home-projects .load-more-ideas { display: none; }
+  .home-projects .project-grid, .home-projects .load-more-ideas, .home-projects .catalog-sentinel { display: none; }
   .home-projects .projects-toolbar { margin-bottom: 0; }
   .projects-toolbar { font-size: 13px; margin-bottom: 18px; }
   .search-field input { font-size: 16px; min-width: 0; }
