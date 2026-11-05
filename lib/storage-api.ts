@@ -3,6 +3,23 @@ import { readAuthSettings } from "./auth-settings";
 import { B2Storage, noStore, readB2Settings } from "./b2-storage";
 import { MAX_CLOUD_JSON_BYTES, StorageError } from "./cloud-library";
 
+// Only known diagnostic labels may reach logs; SDK messages/headers can contain secrets.
+const diagnosticTypes = new Set(["Error", "TypeError", "SyntaxError", "RangeError", "TimeoutError", "AbortError", "NetworkingError", "NotFound", "NoSuchKey", "NoSuchBucket", "AccessDenied", "Forbidden", "Unauthorized", "InvalidAccessKeyId", "SignatureDoesNotMatch", "ExpiredToken", "InvalidToken", "RequestTimeout", "RequestTimeTooSkewed", "SlowDown", "ServiceUnavailable", "InternalError", "InternalServerError", "Unknown", "UnknownError", "S3ServiceException", "StorageError"]);
+const diagnosticCodes = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "EPIPE", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_SOCKET"]);
+
+function logStorageFailure(error: unknown, problem: StorageError) {
+  const source = error && typeof error === "object" ? error as { name?: unknown; code?: unknown; $metadata?: { httpStatusCode?: unknown }; cause?: { code?: unknown } } : undefined;
+  const status = source?.$metadata?.httpStatusCode;
+  const code = source?.code ?? source?.cause?.code;
+  console.error("[storage] request failed", {
+    code: problem.code,
+    status: problem.status,
+    errorType: typeof source?.name === "string" && diagnosticTypes.has(source.name) ? source.name : "OtherError",
+    ...(typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? { upstreamStatus: status } : {}),
+    ...(typeof code === "string" && diagnosticCodes.has(code) ? { networkCode: code } : {}),
+  });
+}
+
 /** Bound bytes before JSON parsing, including requests without a Content-Length header. */
 export async function readStorageBody(request: Request): Promise<unknown> {
   if (!/^application\/json(?:;|$)/i.test(request.headers.get("content-type") || "")) throw new StorageError(415, "JSON_REQUIRED", "Нужен JSON-запрос.");
@@ -35,6 +52,7 @@ export async function storageEndpoint(request: Request, mutation: boolean, run: 
     finally { storage.client.destroy(); }
   } catch (error) {
     const problem = error instanceof StorageError ? error : new StorageError(502, "STORAGE_UNAVAILABLE", "Не удалось обратиться к B2. Повтори запрос позже.");
+    if (problem.status >= 500) logStorageFailure(error, problem);
     // Do not expose SDK errors: they can contain signed URLs, request headers and account details.
     return Response.json({ error: { code: problem.code, message: problem.message, ...(problem.revisions ? { revisions: problem.revisions } : {}) } }, { status: problem.status, headers: { ...noStore, Vary: "Cookie" } });
   }
