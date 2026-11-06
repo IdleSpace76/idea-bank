@@ -1,6 +1,6 @@
 import { parseLibrary, summarizeIdea, type IdeaSummary, type Project, type Section } from "./ideas";
 import { prepareLocalCatalog, readLocalCatalogPage, readLocalIdea, readMeta, type LocalCatalogCursor } from "./library-store";
-import { readReaderCache, removeReaderCache, writeReaderCache,markReaderFresh } from "./reader-cache";
+import { readReaderCache, readReaderCacheState, removeReaderCache, writeReaderCache,markReaderFresh } from "./reader-cache";
 import type { CatalogPage } from "./catalog-storage";
 import { overlayIdea,overlayPage } from "./scoped-overlay";
 import type { SyncTarget,ScopedRead } from "./scoped-types";
@@ -12,14 +12,15 @@ import { cloudFetch, CloudAccessError,cloudAccessProblem } from "./cloud-access"
 export type ReaderPage = { sections: Section[]; ideas: IdeaSummary[]; total: number; counts: Record<string,number>; revision: string; nextCursor: string | null; offline: boolean; uninitialized: boolean; cloudError?: string };
 export type ReaderIdea = { idea: Project; version: string; offline: boolean; editBase?:ScopedRead; cloudError?: string };
 export type ReaderQuery = { query?: string; sectionId?: string; cursor?: string; limit?: number };
+export type ReaderPageLoad={localOnly?:boolean;force?:boolean;onCached?:(page:ReaderPage|undefined)=>void};
 export class ReaderError extends Error { constructor(public code: string, message: string,public target?:SyncTarget) { super(message); } }
 const unavailable = () => new ReaderError("OFFLINE","Для открытия этой идеи нужно подключение к интернету");
 const fallback = (error: unknown) => error instanceof TypeError || error instanceof DOMException && ["TimeoutError","NetworkError"].includes(error.name) || error instanceof ReaderError && error.code === "UNAVAILABLE";
 
-async function get(scope: string, path: string, headers: HeadersInit | undefined, generation: number) {
+async function get(scope: string, path: string, headers: HeadersInit | undefined, generation: number,epoch:number) {
   if (navigator.onLine === false) throw new TypeError("Offline");
   let response: Response;
-  try { response = await cloudFetch(path,{headers,credentials:"same-origin",cache:"no-store",signal:AbortSignal.timeout(65000)},JSON.stringify([scope,generation])); }
+  try { response = await cloudFetch(path,{headers,credentials:"same-origin",cache:"no-store",signal:AbortSignal.timeout(65000)},JSON.stringify([scope,generation,epoch])); }
   catch(error) { if(error instanceof CloudAccessError && error.status)throw new ReaderError("UNAVAILABLE",error.message);throw error instanceof CloudAccessError ? new TypeError(error.message) : error; }
   if (response.status === 304) return response;
   if (!response.ok) {
@@ -60,7 +61,8 @@ function checkedPage(value: unknown): ReaderPage {
   return { sections:library.sections,ideas:library.projects.map(summarizeIdea),total:page.total,counts:page.sectionCounts || {},revision:page.revision,nextCursor:page.nextCursor,offline:false,uninitialized:page.uninitialized === true };
 }
 
-export async function loadReaderPage(scope: string | undefined, options: ReaderQuery = {}, localOnly=false): Promise<ReaderPage> {
+export async function loadReaderPage(scope: string | undefined, options: ReaderQuery = {}, load:boolean|ReaderPageLoad=false): Promise<ReaderPage> {
+  const {localOnly=false,force=false,onCached}=typeof load==="boolean"?{localOnly:load}:load;
   if (!scope) {
     await prepareLocalCatalog();
     const page = await readLocalCatalogPage({...options,cursor:options.cursor ? JSON.parse(options.cursor) as LocalCatalogCursor : undefined}).catch(error=>{
@@ -75,15 +77,33 @@ export async function loadReaderPage(scope: string | undefined, options: ReaderQ
   if (options.cursor) params.set("cursor",options.cursor);
   params.set("limit",String(options.limit ?? 24));
   const key = params.toString();
-  if(localOnly) {
-    const saved=await readReaderCache<ReaderPage>(scope,"page",key).catch(()=>undefined);
-    if(saved)return overlayPage(scope,{...saved,...localCacheState()},options);
+  const cached=await readReaderCacheState<ReaderPage>(scope,"page",key).catch(()=>({value:undefined,fresh:false,epoch:0}));
+  if(cached.value) {
+    const page=await overlayPage(scope,{...cached.value,...localCacheState()},options);
+    onCached?.(page);
+    if(localOnly || !force && cached.fresh)return page;
   }
+  // A complete verified set of card metadata can answer another section/search without B2.
+  if(!force && !options.cursor && key!=="limit=24") {
+    const navigation=await readReaderCacheState<ReaderPage>(scope,"page","limit=24").catch(()=>({value:undefined,fresh:false,epoch:0}));
+    const base=navigation.value;
+    if(base && (navigation.fresh || localOnly)) {
+      const query=options.query?.trim().toLowerCase();
+      const ideas=base.ideas.filter(idea=>(!options.sectionId || idea.sectionId===options.sectionId) && (!query || `${idea.name}\n${idea.description}`.toLowerCase().includes(query)));
+      const complete=base.nextCursor===null || !!options.sectionId && !query && ideas.length===(base.counts[options.sectionId] || 0);
+      if(complete && ideas.length<=(options.limit ?? 24)) {
+        const page={...base,ideas,total:ideas.length,nextCursor:null};
+        if(navigation.fresh)await writeReaderCache(scope,"page",key,page,undefined,navigation.epoch).catch(()=>{});
+        return overlayPage(scope,{...page,...localCacheState()},options);
+      }
+    }
+  }
+  if(!cached.value)onCached?.(undefined);
   try {
     const started=await scopedReadCounter();
-    const result = checkedPage(await (await get(scope,`/api/catalog?${key}`,undefined,started)).json());
+    const result = checkedPage(await (await get(scope,`/api/catalog?${key}`,undefined,started,cached.epoch)).json());
     await observeScopedAlive(scope,result.ideas.map(idea=>idea.id),result.sections.map(section=>section.id),started);
-    await writeReaderCache(scope,"page",key,result).catch(() => {});
+    await writeReaderCache(scope,"page",key,result,undefined,cached.epoch).catch(() => {});
     return overlayPage(scope,result,options);
   } catch (error) {
     if (!fallback(error)) throw error;
@@ -105,7 +125,7 @@ export async function loadReaderPage(scope: string | undefined, options: ReaderQ
   }
 }
 
-export async function loadReaderIdea(scope: string | undefined, id: string, onCached?: (value:ReaderIdea)=>void, localOnly=false): Promise<ReaderIdea> {
+export async function loadReaderIdea(scope: string | undefined, id: string, onCached?: (value:ReaderIdea)=>void, localOnly=false,force=false): Promise<ReaderIdea> {
   if (!scope) {
     const saved = await readLocalIdea(id);
     if (!saved) throw new ReaderError("NOT_FOUND","Идея не найдена.");
@@ -114,22 +134,23 @@ export async function loadReaderIdea(scope: string | undefined, id: string, onCa
   const pending=await overlayIdea(scope,id);
   if(pending && "deleted" in pending && (!("confirmed" in pending) || navigator.onLine===false))throw new ReaderError("NOT_FOUND","Идея не найдена.");
   if(pending?.idea)return {idea:pending.idea,version:pending.version!,...localCacheState()};
-  let saved = await readReaderCache<ReaderIdea>(scope,"idea",id).catch(() => undefined);
+  const cached=await readReaderCacheState<ReaderIdea>(scope,"idea",id).catch(()=>({value:undefined,fresh:false,epoch:0}));
+  let saved = cached.value;
   if (saved) try { checkedIdea(saved.idea); if (!/^[a-f0-9]{64}$/.test(saved.version)) saved = undefined; } catch { saved = undefined; }
   if (!saved && (await readMeta<{scope:string}>("sync-v2"))?.scope===scope) {
     const local=await readLocalIdea(id).catch(()=>null);if(local)saved={idea:local.idea,version:"local",offline:true};
   }
   // Render a verified local copy immediately; the request still checks its version and access.
   if(saved && !(pending && "deleted" in pending))onCached?.({...saved,offline:navigator.onLine===false});
-  if(localOnly && saved && !(pending && "deleted" in pending))return {...saved,...localCacheState()};
+  if((localOnly || !force && cached.fresh) && saved && !(pending && "deleted" in pending))return {...saved,...localCacheState()};
   try {
     const started=await scopedReadCounter();
-    const response = await get(scope,`/api/ideas/${encodeURIComponent(id)}`,saved?.editBase && saved.version!=="local" ? {"If-None-Match":`"${saved.version}"`} : undefined,started);
+    const response = await get(scope,`/api/ideas/${encodeURIComponent(id)}`,saved?.editBase && saved.version!=="local" ? {"If-None-Match":`"${saved.version}"`} : undefined,started,cached.epoch);
     if (response.status === 304) {
       if (!saved) throw new ReaderError("INVALID_DATA","Некорректный ответ облака.");
       await observeScopedAlive(scope,[id],[saved.idea.sectionId],started);
       if((await readScopedDeletions()).some(row=>row.scope===scope && row.kind==="idea" && row.id===id))throw new ReaderError("NOT_FOUND","Идея не найдена.");
-      await markReaderFresh(scope,id).catch(()=>{});
+      await markReaderFresh(scope,id,cached.epoch).catch(()=>{});
       return {...saved,offline:false};
     }
     const data = await response.json();
@@ -139,7 +160,7 @@ export async function loadReaderIdea(scope: string | undefined, id: string, onCa
     await observeScopedAlive(scope,[id],[idea.sectionId],started);
     if((await readScopedDeletions()).some(row=>row.scope===scope && row.kind==="idea" && row.id===id))throw new ReaderError("NOT_FOUND","Идея не найдена.");
     const result:ReaderIdea = {idea,version:data.version as string,offline:false,editBase:editBaseline(data.editBase,idea)};
-    await writeReaderCache(scope,"idea",id,result).catch(() => {});
+    await writeReaderCache(scope,"idea",id,result,undefined,cached.epoch).catch(() => {});
     return result;
   } catch (error) {
     if (error instanceof ReaderError && error.code === "NOT_FOUND") {await noteScopedDeletion(scope,id);await removeReaderCache(scope,"idea",id).catch(() => {});}

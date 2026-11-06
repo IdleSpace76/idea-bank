@@ -47,5 +47,5 @@ test("read observations do not repeatedly write unchanged cache and deletion met
     IDBObjectStore.prototype.put=native;
     return {unchanged,marked,repeated,fresh,staleObservation:staleObservation-deletion,alive:alive-deletion};
   });
-  expect(counts).toEqual({unchanged:0,marked:1,repeated:1,fresh:2,staleObservation:0,alive:1});
+  expect(counts).toEqual({unchanged:0,marked:2,repeated:3,fresh:4,staleObservation:0,alive:1});
 });

@@ -34,7 +34,7 @@ try {
     await context.addCookies([{name:cookie,value:token,url:origin,httpOnly:true,sameSite:"Lax"}]);
     await context.addInitScript(()=>localStorage.setItem("idea-bank.language","ru"));
     await context.addInitScript(()=>{const native=indexedDB.open.bind(indexedDB);window.__databaseOpens=0;indexedDB.open=(name,version)=>{if(name==="idea-bank.local")window.__databaseOpens++;return native(name,version);};});
-    const calls=[],batches=[],errors=[];let offline=false,denied=false,heldIdeaRead=null;
+    const calls=[],batches=[],errors=[];let offline=false,denied=false,heldIdeaRead=null,heldCatalogRead=null;
     await context.route("https://s3.eu-central-003.backblazeb2.com/**",async route=>{
       if(offline)return route.abort("failed");
       const request=route.request(),key=decodeURIComponent(new URL(request.url()).pathname).replace(/^\/fixture-bucket\//,""),headers={"Access-Control-Allow-Origin":"*","Access-Control-Allow-Methods":"GET,PUT,OPTIONS","Access-Control-Allow-Headers":"content-type,content-md5,x-amz-meta-sha256"};
@@ -58,7 +58,7 @@ try {
           if(request.method()==="POST")return reply(await fixture.entities().readScoped(body.target,body.includeIdeas,body.includeMedia));
           batches.push(body);return reply(await fixture.entities().save(body));
         }
-        if(url.pathname==="/api/catalog")return reply(await fixture.entities().catalog().readPage({limit:Number(url.searchParams.get("limit")||24),cursor:url.searchParams.get("cursor")||undefined,query:url.searchParams.get("q")||undefined,sectionId:url.searchParams.get("sectionId")||undefined}));
+        if(url.pathname==="/api/catalog"){if(heldCatalogRead)await heldCatalogRead;return reply(await fixture.entities().catalog().readPage({limit:Number(url.searchParams.get("limit")||24),cursor:url.searchParams.get("cursor")||undefined,query:url.searchParams.get("q")||undefined,sectionId:url.searchParams.get("sectionId")||undefined}));}
         if(url.pathname==="/api/catalog/media")return reply(await fixture.entities().catalog().readMedia(url.searchParams.get("id")));
         if(url.pathname==="/api/storage/media/upload")return reply(await fixture.storage.createUpload(request.postDataJSON()));
         if(url.pathname.startsWith("/api/ideas/")) {
@@ -99,7 +99,27 @@ try {
     assert.equal(calls.filter(call=>call.path==="/api/ideas/idea-0000").length,1);
     await home();await firstCard.click();
     await expect(page.getByRole("heading",{name:"Document 0",exact:true})).toBeVisible();
-    await expect.poll(()=>calls.filter(call=>call.path==="/api/ideas/idea-0000").at(-1)?.etag).toBeTruthy();
+    await delay(250);
+    assert.equal(calls.filter(call=>call.path==="/api/ideas/idea-0000").length,1,"Returning to a verified idea reuses its body without another B2 check");
+    await home();await page.locator(".section-open").click();
+    await expect(page.locator(".project-card")).toHaveCount(24);
+    const beforeNavigation=readCalls();
+    for(let n=0;n<3;n++) {
+      await home();await page.locator(".section-open").click();
+      await expect(page.locator(".project-card")).toHaveCount(24);
+    }
+    await delay(350);
+    assert.equal(readCalls(),beforeNavigation,"Repeated home/section navigation produces zero catalog or idea HTTP requests");
+    await home();
+    let releaseCatalog;heldCatalogRead=new Promise(resolve=>releaseCatalog=resolve);
+    const beforeCatalogReload=calls.filter(call=>call.path==="/api/catalog").length;
+    await page.reload();
+    await expect(page.locator(viewport.width<540?".recent-project-item":".project-card-shell")).toHaveCount(viewport.width<540?4:24);
+    await expect.poll(()=>calls.filter(call=>call.path==="/api/catalog").length).toBeGreaterThan(beforeCatalogReload);
+    await expect(page.getByText("Загружаем идеи…",{exact:true})).toHaveCount(0);
+    releaseCatalog();heldCatalogRead=null;
+    await expect(page.locator(".local-status")).toHaveAttribute("data-sync-phase","synced");
+    await firstCard.click();await expect(page.getByRole("heading",{name:"Document 0",exact:true})).toBeVisible();
     // The viewed body already carries its causal versions: adding a block needs no cloud read.
     const beforeEdit=calls.filter(call=>call.path==="/api/sync/scoped" && call.method==="POST").length;
     await page.getByRole("button",{name:"Добавить блок",exact:true}).click();await expect(page.locator("#project-editor")).toBeVisible();

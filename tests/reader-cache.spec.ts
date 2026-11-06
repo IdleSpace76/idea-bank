@@ -81,6 +81,7 @@ test("offline reading preserves previously synced originals; a cloud deletion in
   const deleted=await page.evaluate(async()=>{
     const root="/__local_fixture__/",reader=await import(root+"library-reader.js"),cache=await import(root+"reader-cache.js"),store=await import(root+"library-store.js");
     await cache.writeReaderCache("cloud","idea","example",{idea:(await store.readLocalLibrary()).projects[0],version:"a".repeat(64),offline:false});
+    await cache.markReaderStale("cloud");
     let code="";try{await reader.loadReaderIdea("cloud","example");}catch(error){code=(error as {code:string}).code;}
     return {code,cached:await cache.readReaderCache("cloud","idea","example")};
   });
