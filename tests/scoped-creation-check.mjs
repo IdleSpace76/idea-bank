@@ -1,0 +1,17 @@
+import assert from "node:assert/strict";
+import {createRequire} from "node:module";
+import {schema,client} from "./entity-fixture.mjs";
+const {scopedPlan}=createRequire(import.meta.url)("../.cache/entity-check/scoped-client.js");
+const parent={id:"s",name:"Original section",description:"",icon:"folder"};
+const idea={id:"new",name:"New idea",description:"",sectionId:"s",cover:"forest",blocks:[],updatedAt:"2026-01-01T00:00:00Z"};
+const target={kind:"idea",id:idea.id},revision="11111111-1111-4111-8111-111111111111";
+const entry={scope:"fixture",target,sequence:1,base:{target,heads:[],index:{},records:[]},local:schema.flattenLibrary({version:1,sections:[parent],projects:[idea]}),creationParent:parent};
+const sectionKey=schema.entityKey("section",parent.id);
+const read=section=>({target,heads:[revision],index:{[sectionKey]:[revision]},records:[{key:sectionKey,revision,value:section}]});
+const changed={...parent,name:"Renamed on another device"};
+const merged=client.resolvePlan(scopedPlan(entry,read(changed)));
+assert.equal(merged.conflicts.length,0);
+assert.deepEqual(merged.values[sectionKey],changed,"Creating an idea never overwrites its parent section");
+assert.equal(schema.assembleLibrary(merged.values).projects[0].name,idea.name);
+assert.ok(client.resolvePlan(scopedPlan(entry,read(null))).conflicts.length,"A deleted parent cannot be silently resurrected by local creation");
+console.log("Local creation baselines preserve changed parents and report parent deletion conflicts.");

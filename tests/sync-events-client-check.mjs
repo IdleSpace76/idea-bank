@@ -52,6 +52,8 @@ try {
   connection.receive({ data: { version: 1, revision } });
   for (const data of [null, {}, { version: 2, revision }, { version: 1, revision: "invalid" }]) connection.receive({ data });
   assert.deepEqual(revisions, [revision]);
+    const incremental=randomUUID();connection.receive({data:{version:2,revision:incremental,keys:['idea:["example"]']}});
+    assert.equal(revisions.at(-1),incremental,"Version-two change hints are accepted alongside legacy events");
   connection.channel.emit("suspended"); assert.equal(ready.at(-1), false);
   connection.channel.emit("attached"); assert.equal(ready.at(-1), true);
   assert.deepEqual(await connection.refresh(), { error: null, token: "fixture-token" });

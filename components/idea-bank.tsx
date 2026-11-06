@@ -17,7 +17,7 @@ import { useScopedSync } from "./use-scoped-sync";
 import { prepareTarget,queuePrepared,type ScopedPlan } from "@/lib/scoped-client";
 import { readScopedIndex } from "@/lib/scoped-store";
 import type { ScopedEntry,SyncTarget } from "@/lib/scoped-types";
-import { assembleLibrary,entityKey } from "@/lib/entity-sync";
+import { assembleLibrary,entityKey,flattenLibrary } from "@/lib/entity-sync";
 import { useLibraryReader } from "./use-library-reader";
 import { useBlockDraft } from "./use-block-draft";
 import type { BlockDraft } from "@/lib/block-drafts";
@@ -117,8 +117,8 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
     },syncBlocked);
   const scoped=useScopedSync(cloudScope,ready&&!legacySession&&!readOnly,
     ()=>ready&&!readOnly&&!draft&&(bridgeRef.current || !savingRef.current&&!importingRef.current&&!importingMedia&&!backupBusy&&(!modalRef.current||modalRef.current.type==="storage-info")),
-    ()=>reader.refresh(),syncBlocked);
-  const reading=reader.main.loading || !!reader.detail?.loading;
+    localOnly=>localOnly?reader.refreshLocal():reader.refresh(),syncBlocked);
+  const reading=reader.networkLoading;
   const readError=reader.cloudError || reader.main.error || reader.detail?.error || "";
   const syncView=legacySession ? automaticSync.view : {...scoped.view,busy:scoped.view.busy || reading,phase:reader.authRequired?"auth" as const:["conflict","auth","retry","error","unavailable"].includes(scoped.view.phase)?scoped.view.phase:reader.offline?"offline" as const:reader.cloudError?"unavailable" as const:reading||scoped.view.busy?"syncing" as const:readError?"error" as const:scoped.view.phase,error:scoped.view.error || readError};
   const syncAttention=["review","conflict","migration","auth","error","unavailable"].includes(syncView.phase);
@@ -291,9 +291,16 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
     } catch(reason) {setStorageError(reason instanceof Error?reason.message:String(reason));}
   }
 
-  /** Creation dialogs need no edit snapshot until the user actually submits them. */
-  async function prepareCreation(target:SyncTarget) {
-    try {await prepareEdit(target);return true;}
+  /** New UUIDs have an empty edit base; conflict checks belong to the background writer. */
+  async function prepareCreation(target:SyncTarget,sectionId?:string) {
+    try {
+      if(!cloudScope || legacySession) {await prepareEdit(target);return true;}
+      const parent=sectionId?library.sections.find(section=>section.id===sectionId):undefined;
+      if(sectionId && !parent)throw new Error(t("Раздел не найден."));
+      const selected:Library={version:1,sections:parent?[parent]:[],projects:[]};
+      preparedEntry.current={scope:cloudScope,target,sequence:0,base:{target,heads:[],index:{},records:[]},local:flattenLibrary(selected),...(parent?{creationParent:parent}:{})};
+      fullRef.current=selected;setFullLibrary(selected);return true;
+    }
     catch(reason){setStorageError(reason instanceof Error?reason.message:String(reason));return false;}
   }
 
@@ -538,13 +545,13 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
         const success = await commit({ ...library, sections: modal.type === "edit-section" ? library.sections.map(s => s.id === section.id ? section : s) : [...library.sections, section] }, modal.type === "edit-section" ? t("Раздел обновлён.") : t("Раздел создан.")); if (success) setModal(null); return success;
       }} /> : modal.type === "new-project" || modal.type === "edit-project" ? <ProjectForm sections={library.sections} initialSectionId={modal.type === "new-project" ? modal.sectionId : modal.project.sectionId} project={modal.type === "edit-project" ? modal.project : undefined} onCancel={() => setModal(null)} onSave={async (values, coverFile) => {
         const project: Project = modal.type === "edit-project" ? { ...modal.project, ...values, updatedAt: new Date().toISOString() } : { id: createId(), ...values, blocks: [], updatedAt: new Date().toISOString() };
-        if(modal.type==="new-project" && !await prepareCreation({kind:"idea",id:project.id}))return false;
+        if(modal.type==="new-project" && !await prepareCreation({kind:"idea",id:project.id},project.sectionId))return false;
         savingRef.current = true;
         try {
         if (coverFile && project.coverImage) await saveMediaFiles(new Map([[project.coverImage.id, coverFile]]));
         savingRef.current = false;
         const success = await commit({ ...library, projects: modal.type === "edit-project" ? library.projects.map(p => p.id === project.id ? project : p) : [...library.projects, project] }, t("Идея сохранена в этом браузере."));
-        if (success) { setModal(null); if (modal.type === "new-project") navigate({ screen: "project", id: project.id }); }
+        if (success) { setModal(null); if (modal.type === "new-project") {reader.showLocalIdea(project);navigate({ screen: "project", id: project.id });} }
         return success;
         } finally { savingRef.current = false; }
       }} />

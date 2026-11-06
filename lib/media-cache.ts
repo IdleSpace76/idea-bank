@@ -7,6 +7,7 @@ import { parseCloudMedia } from "./cloud-library";
 import { downloadCloudMedia } from "./cloud-sync";
 import { translate as t } from "./i18n";
 import { cloudFetch,CloudAccessError } from "./cloud-access";
+import {loadReaderMedia} from "./library-reader";
 
 const downloads = new Map<string, Promise<Blob | undefined>>();
 let active=0;
@@ -39,12 +40,17 @@ async function loadMediaFile(id: string, scope?: string): Promise<Blob | undefin
   if (!scope) return;
   const alias=(await readMeta<Record<string,import("./cloud-library").CloudMedia>>("scoped-media-aliases"))?.[id];
   if(alias && alias.id!==id)return getMediaFile(alias.id,scope);
-  return downloadSlot(()=>fetchMedia(id,scope));
+  return fetchMedia(id,scope);
 }
 
 async function fetchMedia(id: string, scope: string): Promise<Blob | undefined> {
   const checkpoint = await readMeta<SyncCheckpoint>("sync-v2"), key = entityKey("media",id);
   const known = checkpoint?.scope === scope && checkpoint.index[key]?.length === 1 && checkpoint.values[key];
+  if(!known) {
+    const signed=await loadReaderMedia(scope,id),file=parseCloudMedia(signed.media);
+    if(contentId(file)!==id)throw new Error(t("Не удалось получить вложение из облака."));
+    return downloadSlot(()=>cacheDownloadedMedia(id,scope,file,signed.url));
+  }
   const path = known ? `/api/sync/media?key=${encodeURIComponent(key)}&revision=${checkpoint!.index[key][0]}` : `/api/catalog/media?id=${encodeURIComponent(id)}`;
   let response:Response;
   try {response=await cloudFetch(path, { credentials:"same-origin",cache:"no-store",signal:AbortSignal.timeout(120000) },scope);}
@@ -55,7 +61,10 @@ async function fetchMedia(id: string, scope: string): Promise<Blob | undefined> 
   }
   const signed = await response.json(), file = parseCloudMedia(known || signed.media);
   if (contentId(file) !== id) throw new Error(t("Не удалось получить вложение из облака."));
-  const blob = await downloadCloudMedia(file,signed.url);
+  return downloadSlot(()=>cacheDownloadedMedia(id,scope,file,signed.url));
+}
+async function cacheDownloadedMedia(id:string,scope:string,file:import("./cloud-library").CloudMedia,url:string) {
+  const blob = await downloadCloudMedia(file,url);
   // Oversized files can be viewed without forcing them into the persistent cache.
   if (blob.size <= MEDIA_CACHE_LIMIT) {
     await transaction(["meta","media"],"readwrite",async tx => {

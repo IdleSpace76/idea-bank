@@ -6,6 +6,8 @@ import { canonicalLibrary, contentId, entityKey, equal, flattenLibrary, keyParts
 import { CatalogStorage } from "./catalog-storage";
 import type { ScopedRead, SyncTarget } from "./scoped-types";
 import { cachedStorageRead } from "./storage-read-cache";
+import type {ReaderBatchRequest,ReaderBatchResponse,ReaderQuery} from "./reader-batch-types";
+import {readerPageKey} from "./reader-batch-types";
 
 type Manifest = { format: "idea-bank-index"; version: 2; revision: string; parents: string[]; index: EntityIndex; digest: string; legacy?: string };
 type Graph = Map<string, { key: string; parents: string[]; legacy?: string }>;
@@ -185,6 +187,66 @@ export class EntityStorage {
     if (!uuids(candidates) || candidates.some(id => !graph.has(id))) throw new StorageError(409,"STALE_INDEX","Облачный индекс изменился.");
     const heads = candidates.filter(id => !candidates.some(other => id !== other && this.ancestor(id,other,graph))).sort();
     return { heads, index: await this.index(heads,graph) };
+  }
+  /** Read one edit/conflict domain. Unrelated idea bodies never leave storage. */
+  async readReaderBatch(input:unknown):Promise<ReaderBatchResponse> {
+    if(!input || typeof input!=="object")return invalid();
+    const request=input as ReaderBatchRequest;
+    if(request.mediaOnly!==undefined && typeof request.mediaOnly!=="boolean")return invalid();
+    const ids=(value:unknown)=>Array.isArray(value) && value.length<=64 && value.every(id=>typeof id==="string" && id.length>0 && id.length<=200) && new Set(value).size===value.length;
+    if(request.since!==undefined && !uuids(request.since) || request.pages!==undefined && (!Array.isArray(request.pages) || request.pages.length>64 || request.pages.some(page=>!page || typeof page!=="object")) || request.bodies!==undefined && !ids(request.bodies) || request.watch!==undefined && !ids(request.watch) || request.media!==undefined && (!ids(request.media) || request.media.some(id=>!(/^[a-f0-9]{64}-[a-f0-9]{32}$/).test(id))) || request.sidebar!==undefined && typeof request.sidebar!=="boolean")return invalid();
+    const legacy=await this.storage.listRevisions();this.legacyParents=new Map([...legacy.revisions].map(([id,entry])=>[id,entry.parents]));
+    const graph=await this.graph();
+    if(legacy.revisions.size && !graph.size)throw new StorageError(409,"MIGRATION_REQUIRED","Требуется переход на новую синхронизацию.");
+    const heads=this.heads(graph),index=await this.index(heads,graph);
+    const reset=!request.mediaOnly && (!request.since || request.since.some(head=>!graph.has(head)));
+    const base=request.mediaOnly?index:reset?{}:await this.index(request.since!,graph);
+    const changed=reset?[]:[...new Set([...Object.keys(base),...Object.keys(index)])].filter(key=>!equal(base[key] || [],index[key] || []));
+    const watch=new Set(request.watch || []),selected=new Set<string>(),oldSelected=new Set<string>();
+    for(const key of changed) {
+      const part=keyParts(key);
+      if(part.kind==="idea" || part.kind==="section" || part.kind==="block" && watch.has(part.ids[0]))selected.add(key);
+      if(part.kind==="idea" || part.kind==="section")oldSelected.add(key);
+    }
+    const load=async(keys:Set<string>,source:EntityIndex)=>{
+      const records:EntityVersion[]=[];
+      for(const key of keys)for(const revision of source[key] || [])records.push(await this.version(key,revision));
+      return records;
+    };
+    const previous=await load(oldSelected,base);
+    const metadata=await load(new Set([...selected].filter(key=>keyParts(key).kind==="idea")),index);
+    for(const record of metadata) {
+      const value=record.value as {sectionId:string}|null,before=previous.find(old=>old.key===record.key)?.value as {sectionId:string}|null;
+      if(value && watch.has(keyParts(record.key).ids[0]) && before?.sectionId!==value.sectionId)selected.add(entityKey("section",value.sectionId));
+    }
+    const changes={index:Object.fromEntries([...selected].map(key=>[key,index[key] || []])),records:await load(selected,index),previous};
+    const bodies:ReaderBatchResponse["bodies"]=[];
+    for(const id of new Set([...(request.bodies || []),...(reset?[...watch]:[])])) {
+      const target={kind:"idea" as const,id},key=entityKey("idea",id),records=await load(new Set([key]),index);
+      const metadata=records.find(record=>record.value)?.value as {sectionId:string;blockIds:string[]}|undefined;
+      if(!metadata){bodies.push({id,error:{code:"NOT_FOUND",message:"Идея не найдена."}});continue;}
+      const keys=new Set([key,...records.flatMap(record=>{const value=record.value as typeof metadata;return value?[entityKey("section",value.sectionId),...value.blockIds.map(block=>entityKey("block",id,block))]:[];})]);
+      const read={target,heads,index:Object.fromEntries([...keys].filter(key=>index[key]).map(key=>[key,index[key]])),records:await load(keys,index)};
+      bodies.push({id,read});
+    }
+    const catalog=new CatalogStorage(this,{heads,index}),queries=new Map<string,ReaderQuery>();
+    for(const page of request.pages || [])queries.set(readerPageKey(page),page);
+    if(reset && !queries.size && !request.mediaOnly)queries.set("limit=24",{});
+    const pages:ReaderBatchResponse["pages"]=[];
+    for(const query of queries.values())pages.push({query,page:await catalog.readPage(query)});
+    if((request.sidebar || reset) && pages.length)for(const section of pages[0].page.sections.slice(0,48)) {
+      const query={sectionId:section.id,limit:4},key=readerPageKey(query);
+      if(!queries.has(key)){queries.set(key,query);pages.push({query,page:await catalog.readPage(query)});}
+    }
+    const media:ReaderBatchResponse["media"]=[];
+    for(const id of request.media || []) {
+      const key=entityKey("media",id),refs=index[key] || [];
+      if(refs.length!==1){media.push({id,error:{code:refs.length?"IDEA_CONFLICT":"NOT_FOUND",message:"Вложение не найдено или имеет несовместимые версии."}});continue;}
+      const record=await this.version(key,refs[0]);
+      if(record.value)media.push({id,download:await this.storage.signDownload(record.value as CloudMedia)});
+      else media.push({id,error:{code:"NOT_FOUND",message:"Вложение не найдено."}});
+    }
+    return {heads,revision:hash(stable(heads)),reset,pages,changes,bodies,media};
   }
   /** Read one edit/conflict domain. Unrelated idea bodies never leave storage. */
   async readScoped(target: SyncTarget, includeIdeas: string[] = [],includeMedia:string[]=[]): Promise<ScopedRead> {

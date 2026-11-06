@@ -1,6 +1,6 @@
 import type { Realtime } from "ably";
 
-type Callbacks = { onRevision: (revision: string) => void; onConnection: (ready: boolean) => void };
+type Callbacks = { onRevision: (revision: string,keys?:string[]) => void; onConnection: (ready: boolean) => void };
 type Credentials = { enabled: true; channel: string; token: string; expiresAt: number };
 
 /** Owns one optional subscription. Notifications are hints; storage remains authoritative. */
@@ -67,7 +67,7 @@ export class SyncEventsClient {
       void channel.subscribe("library-changed", message => {
         if (!this.active(generation)) return;
         const data = message.data;
-        if (data?.version === 1 && typeof data.revision === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(data.revision)) this.callbacks.onRevision(data.revision);
+        if ((data?.version === 1 || data?.version===2 && Array.isArray(data.keys) && data.keys.length<=128 && data.keys.every((key:unknown)=>typeof key==="string" && key.length<=500)) && typeof data.revision === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(data.revision)) this.callbacks.onRevision(data.revision,data.version===2?data.keys:undefined);
       }).catch(() => { if (this.active(generation)) { this.suspend(); this.scheduleRetry(); } });
       client.connect();
     } catch { if (this.active(generation)) { this.setReady(false); this.scheduleRetry(); } }

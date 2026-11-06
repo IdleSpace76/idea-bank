@@ -73,6 +73,7 @@ const modules={
   "./media-cache-store":{},
   "./entity-sync":{entityKey:()=>"fixture"},
   "./cloud-library":{},"./cloud-sync":{},"./i18n":{translate:value=>value},"./cloud-access":exports,
+  "./library-reader":{loadReaderMedia:async()=>{const response=await exports.cloudFetch("/api/reader/batch",{method:"POST"});if(!response.ok)throw new Error("Denied");return response.json();}},
 };
 vm.runInNewContext(ts.transpileModule(mediaSource,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports:mediaExports,Date:{now:()=>now},AbortSignal,require:name=>{assert.ok(Object.hasOwn(modules,name));return modules[name];}});
 const beforeMedia=calls;

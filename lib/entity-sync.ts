@@ -1,5 +1,5 @@
 import { parseLibrary, type Library, type Project, type Section, type TextBlock } from "./ideas";
-import { invalid, parseCloudMedia, type CloudMedia } from "./cloud-library";
+import { invalid, parseCloudMedia, revisionPattern, type CloudMedia } from "./cloud-library";
 
 export type EntityValue = Section | (Omit<Project, "blocks"> & { blockIds: string[] }) | TextBlock | CloudMedia;
 export type EntityMap = Record<string, EntityValue | null>;
@@ -108,4 +108,28 @@ export function mergeValue(key: string, base: EntityValue | null, local: EntityV
     } else return { value: local, conflict: true };
   }
   return { value: JSON.parse(JSON.stringify(output)) as EntityValue, conflict: false };
+}
+
+function versionIds(value: unknown): value is string[] { return Array.isArray(value) && value.length <= 16 && value.every(id => typeof id === "string" && revisionPattern.test(id)) && new Set(value).size === value.length; }
+export function validateRead(value: EntityRead, known: EntityIndex, previous: EntityMap, oldRecovery: Record<string,EntityValue[]> = {}): { remote: EntityMap; recovery?: Record<string,EntityValue[]>; variants: Record<string,(EntityValue | null)[]> } {
+  if (!value || !versionIds(value.heads) || !value.index || typeof value.index !== "object" || Array.isArray(value.index) || !Array.isArray(value.records)) throw new Error("Неполный ответ истории облака.");
+  const records = new Map<string, EntityValue | null>(), recovery = { ...oldRecovery };
+  for (const record of value.records) {
+    const key = JSON.stringify([record.key,record.revision]);
+    if (records.has(key) || !value.index[record.key]?.includes(record.revision)) throw new Error("Неполный ответ истории облака.");
+    records.set(key, parseEntity(record.key,record.value));
+    if (record.previous) { if (!Array.isArray(record.previous) || record.previous.length > 16) throw new Error("Неполный ответ истории облака."); recovery[record.key] = record.previous.map(value => parseEntity(record.key,value)).filter(Boolean) as EntityValue[]; }
+  }
+  const remote: EntityMap = Object.create(null), variants: Record<string,(EntityValue | null)[]> = Object.create(null);
+  for (const [key, revisions] of Object.entries(value.index)) {
+    keyParts(key); if (!versionIds(revisions) || !revisions.length) throw new Error("Неполный ответ истории облака.");
+    variants[key] = revisions.map(id => {
+      const identity = JSON.stringify([key,id]);
+      if (records.has(identity)) return records.get(identity)!;
+      if (revisions.length === 1 && equal(revisions,known[key]) && Object.hasOwn(previous,key)) return previous[key];
+      throw new Error("Неполный ответ истории облака.");
+    });
+    remote[key] = variants[key][0];
+  }
+  return { remote, variants, recovery };
 }

@@ -23,7 +23,7 @@ export async function deleteLocalDatabase() {
 }
 /** Serve actual storage modules only in isolated Playwright routes. */
 export async function exposeLibraryStore(page: Page) {
-  const names = new Set(["library-store", "local-database", "ideas", "i18n", "translations", "rich-text", "example-media", "media-store","media-cache-store","entity-sync","cloud-library","reader-cache","library-reader","library-edit","scoped-store","scoped-types","scoped-overlay","sync-lock","block-drafts","cloud-access"]);
+  const names = new Set(["library-store", "local-database", "ideas", "i18n", "translations", "rich-text", "example-media", "media-store","media-cache-store","entity-sync","cloud-library","reader-cache","library-reader","library-edit","scoped-store","scoped-types","scoped-overlay","sync-lock","block-drafts","cloud-access","reader-batch-types"]);
   await page.route("**/__local_fixture__/*.js", async route => {
     const name = new URL(route.request().url()).pathname.split("/").pop()!.replace(/\.js$/, "");
     if (!names.has(name)) return route.abort();

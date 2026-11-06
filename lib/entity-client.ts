@@ -1,5 +1,5 @@
 import { type Library, type Project, type Section, type TextBlock } from "./ideas";
-import { canonicalLibrary, contentId, flattenLibrary, assembleLibrary, mergeValue, equal, entityKey, keyParts, parseEntity, type EntityMap, type EntityIndex, type EntityValue, type EntityRead, type SyncCheckpoint, type MergeConflict, type EntityChange } from "./entity-sync";
+import { canonicalLibrary, validateRead, contentId, flattenLibrary, assembleLibrary, mergeValue, equal, entityKey, keyParts, parseEntity, type EntityMap, type EntityIndex, type EntityValue, type EntityRead, type SyncCheckpoint, type MergeConflict, type EntityChange } from "./entity-sync";
 import { libraryAssets, parseCloudSnapshot, parseCloudMedia, revisionPattern, type CloudMedia } from "./cloud-library";
 import { readMeta, readLocalSnapshot, saveLocalLibrary, saveSyncOperation, isPristineStarter } from "./library-store";
 import { request, transaction } from "./local-database";
@@ -21,29 +21,7 @@ async function api(path: string, body?: unknown, method = "POST"): Promise<any> 
 type Operation = { scope: string; body: { operationId: string; heads: string[]; changes: EntityChange[] }; before: EntityMap; values: EntityMap };
 export type EntityPlan = { scope: string; expected: Library; local: EntityMap; base: EntityMap; remote: EntityMap; recovery?: Record<string,EntityValue[]>; variants: Record<string, (EntityValue | null)[]>; read: EntityRead; sources: CloudMedia[]; first: boolean; resolveMode?: "merge" | "cloud"; resolvedChoices?: SyncChoices; completedOperation?: string; conflicts: MergeConflict[] };
 export type SyncChoices = Record<string, number>;
-function versionIds(value: unknown): value is string[] { return Array.isArray(value) && value.length <= 16 && value.every(id => typeof id === "string" && revisionPattern.test(id)) && new Set(value).size === value.length; }
-export function validateRead(value: EntityRead, known: EntityIndex, previous: EntityMap, oldRecovery: Record<string,EntityValue[]> = {}): { remote: EntityMap; recovery?: Record<string,EntityValue[]>; variants: Record<string,(EntityValue | null)[]> } {
-  if (!value || !versionIds(value.heads) || !value.index || typeof value.index !== "object" || Array.isArray(value.index) || !Array.isArray(value.records)) throw new SyncError("Неполный ответ истории облака.");
-  const records = new Map<string, EntityValue | null>(), recovery = { ...oldRecovery };
-  for (const record of value.records) {
-    const key = JSON.stringify([record.key,record.revision]);
-    if (records.has(key) || !value.index[record.key]?.includes(record.revision)) throw new SyncError("Неполный ответ истории облака.");
-    records.set(key, parseEntity(record.key,record.value));
-    if (record.previous) { if (!Array.isArray(record.previous) || record.previous.length > 16) throw new SyncError("Неполный ответ истории облака."); recovery[record.key] = record.previous.map(value => parseEntity(record.key,value)).filter(Boolean) as EntityValue[]; }
-  }
-  const remote: EntityMap = Object.create(null), variants: Record<string,(EntityValue | null)[]> = Object.create(null);
-  for (const [key, revisions] of Object.entries(value.index)) {
-    keyParts(key); if (!versionIds(revisions) || !revisions.length) throw new SyncError("Неполный ответ истории облака.");
-    variants[key] = revisions.map(id => {
-      const identity = JSON.stringify([key,id]);
-      if (records.has(identity)) return records.get(identity)!;
-      if (revisions.length === 1 && equal(revisions,known[key]) && Object.hasOwn(previous,key)) return previous[key];
-      throw new SyncError("Неполный ответ истории облака.");
-    });
-    remote[key] = variants[key][0];
-  }
-  return { remote, variants, recovery };
-}
+export { validateRead } from "./entity-sync";
 function subtree(key: string, values: EntityMap): string[] {
   const { kind, ids } = keyParts(key), result = [key];
   if (kind === "section") for (const [child,v] of Object.entries(values)) if (v && keyParts(child).kind === "idea" && (v as { sectionId: string }).sectionId === ids[0]) result.push(...subtree(child,values));

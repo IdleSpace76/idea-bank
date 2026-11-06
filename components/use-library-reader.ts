@@ -1,9 +1,8 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { loadReaderIdea, loadReaderPage, ReaderError, type ReaderPage } from "@/lib/library-reader";
+import { useCallback, useEffect, useMemo, useRef, useState,useSyncExternalStore } from "react";
+import { loadReaderIdea, loadReaderPage,syncReader,readerActivity,subscribeReaderActivity, ReaderError, type ReaderPage } from "@/lib/library-reader";
 import { subscribeLocalChanges } from "@/lib/library-store";
 import { subscribeScoped,scopedBatchActive } from "@/lib/scoped-store";
-import { markReaderStale } from "@/lib/reader-cache";
 import type { SyncTarget,ScopedRead } from "@/lib/scoped-types";
 import type { IdeaSummary, Library, Project, Route, Section } from "@/lib/ideas";
 
@@ -14,29 +13,36 @@ const projects = (ideas: IdeaSummary[]): Project[] => ideas.map(idea => ({...ide
 
 /** Keep only visible card metadata and the open document in React state. */
 export function useLibraryReader(scope: string | undefined, enabled: boolean, route: Route, query: string, sidebarQuery: string, locked: boolean) {
+  const networkLoading=useSyncExternalStore(subscribeReaderActivity,useCallback(()=>readerActivity(scope),[scope]),()=>0)>0;
   const [main,setMain] = useState<List>(emptyList), [search,setSearch] = useState<List>(emptyList);
   const [sidebar,setSidebar] = useState<Record<string,List>>({});
   const [detail,setDetail] = useState<{id:string;idea?:Project;editBase?:ScopedRead;loading:boolean;offline:boolean;error:string;cloudError?:string;conflict?:SyncTarget;auth?:boolean}>({id:"",loading:false,offline:false,error:""});
   const detailRef=useRef(detail);detailRef.current=detail;
   const detailScope=useRef(scope);
+  const showLocalIdea=useCallback((idea:Project)=>{
+    detailScope.current=scope;
+    setDetail({id:idea.id,idea,loading:false,offline:navigator.onLine===false,error:""});
+  },[scope]);
   const [refreshState,setRefreshState] = useState({id:0,localOnly:false}), [online,setOnline] = useState(true);
-  const refreshId=refreshState.id,needsCloud=useRef(false);
+  const refreshId=refreshState.id,refreshRequest=useRef<Promise<void>|null>(null);
   const invalidating=useRef<Promise<unknown>>(Promise.resolve());
   const lastMainRefresh=useRef<{scope?:string;id:number}>({id:-1}),lastDetailRefresh=useRef<{scope?:string;id:number}>({id:-1});
   const state = useRef({main,sidebar,search,locked}); state.current = {main,sidebar,search,locked};
   const refreshTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
   const lastWake=useRef(Date.now());
-  const scheduleRefresh = useCallback((cloud:boolean) => {
-    if(cloud)needsCloud.current=true;
+  const scheduleRefresh = useCallback(() => {
     if(refreshTimer.current!==null)return;
-    refreshTimer.current=setTimeout(()=>{refreshTimer.current=null;const localOnly=!needsCloud.current;needsCloud.current=false;setRefreshState(value=>({id:value.id+1,localOnly}));},200);
+    refreshTimer.current=setTimeout(()=>{refreshTimer.current=null;setRefreshState(value=>({id:value.id+1,localOnly:true}));},200);
   },[]);
   const refresh=useCallback(()=>{
-    if(scope && !needsCloud.current)invalidating.current=invalidating.current.catch(()=>{}).then(()=>markReaderStale(scope)).catch(()=>{});
-    scheduleRefresh(true);
+    if(scope && !refreshRequest.current) {
+      const pending=syncReader(scope).catch(error=>{setMain(previous=>({...previous,error:reason(error),cloudError:error instanceof ReaderError && error.code==="UNAVAILABLE"?error.message:undefined,conflict:error instanceof ReaderError?error.target:undefined}));}).finally(()=>{if(refreshRequest.current===pending)refreshRequest.current=null;});
+      refreshRequest.current=pending;invalidating.current=pending;
+    }
+    scheduleRefresh();
   },[scope,scheduleRefresh]);
-  const refreshLocal=useCallback(()=>scheduleRefresh(false),[scheduleRefresh]);
-  useEffect(()=>()=>{if(refreshTimer.current!==null){clearTimeout(refreshTimer.current);refreshTimer.current=null;}needsCloud.current=false;},[scope]);
+  const refreshLocal=useCallback(()=>scheduleRefresh(),[scheduleRefresh]);
+  useEffect(()=>()=>{if(refreshTimer.current!==null){clearTimeout(refreshTimer.current);refreshTimer.current=null;}refreshRequest.current=null;},[scope]);
   const sectionId = route.screen === "section" ? route.id : undefined;
   const ideaId = route.screen === "project" ? route.id : undefined;
   const mainKey = JSON.stringify([scope,sectionId,query]), lastKey = useRef("");
@@ -50,7 +56,7 @@ export function useLibraryReader(scope: string | undefined, enabled: boolean, ro
   useEffect(() => {
     const wake = () => {
       setOnline(navigator.onLine !== false);
-      if(document.visibilityState==="hidden" || navigator.onLine===false || Date.now()-lastWake.current<30000)return;
+      if(document.visibilityState==="hidden" || navigator.onLine===false || Date.now()-lastWake.current<600000)return;
       lastWake.current=Date.now();refresh();
     };
     const reconnect=()=>{setOnline(navigator.onLine!==false);lastWake.current=Date.now();refresh();};
@@ -58,7 +64,7 @@ export function useLibraryReader(scope: string | undefined, enabled: boolean, ro
     setOnline(navigator.onLine !== false);
     window.addEventListener("online",reconnect); window.addEventListener("offline",wake); window.addEventListener("focus",wake);
     document.addEventListener("visibilitychange",visible);
-    const localChange=(external=false)=>{localVersion.current++;if(!state.current.locked && (!scope || external || !scopedBatchActive(scope))){if(external)refresh();else scheduleRefresh(false);}};
+    const localChange=(external=false)=>{localVersion.current++;if(!state.current.locked && (!scope || external || !scopedBatchActive(scope)))scheduleRefresh();};
     const stop = subscribeLocalChanges(()=>localChange());
     const stopScoped=subscribeScoped((value,external)=>{if(value===scope)localChange(external);});
     return () => {stop();stopScoped();window.removeEventListener("online",reconnect);window.removeEventListener("offline",wake);window.removeEventListener("focus",wake);document.removeEventListener("visibilitychange",visible);};
@@ -86,7 +92,7 @@ export function useLibraryReader(scope: string | undefined, enabled: boolean, ro
           setMain(previous=>cached?{...previous,page:cached,source:scope,items:sameKey && previous.page?.revision===cached.revision && previous.items.length>cached.ideas.length?previous.items:cached.ideas,cachePending:false,loading:true,error:cached.cloudError || ""}:{...previous,cachePending:false});
         }}), items = [...page.ideas];
         while (!cancelled && page.nextCursor && items.length < target) {
-          page = await loadReaderPage(scope,{sectionId,query,cursor:page.nextCursor},localOnly); items.push(...page.ideas);
+          try{page = await loadReaderPage(scope,{sectionId,query,cursor:page.nextCursor},localOnly);items.push(...page.ideas);}catch(error){if(localOnly && error instanceof ReaderError && error.code==="CACHE_MISS")break;throw error;}
         }
         if (!cancelled) {navigation.current={scope,sections:page.sections,counts:page.counts};setMain({items,page,source:scope,localVersion:localSnapshotVersion,localOnly,loading:false,error:page.cloudError || ""});}
       } catch (error) {
@@ -136,7 +142,7 @@ export function useLibraryReader(scope: string | undefined, enabled: boolean, ro
             next[section.id]={items:loaded,page:{...catalog,ideas:loaded,total:count,nextCursor:null},source:scope,loading:false,error:""};return;
           }
           let page=await loadReaderPage(scope,{sectionId:section.id,limit:4},!!main.localOnly),items=[...page.ideas];
-          while(!cancelled && page.nextCursor && items.length<target){page=await loadReaderPage(scope,{sectionId:section.id,cursor:page.nextCursor},!!main.localOnly);items.push(...page.ideas);}
+          while(!cancelled && page.nextCursor && items.length<target){try{page=await loadReaderPage(scope,{sectionId:section.id,cursor:page.nextCursor},!!main.localOnly);items.push(...page.ideas);}catch(error){if(main.localOnly && error instanceof ReaderError && error.code==="CACHE_MISS")break;throw error;}}
           next[section.id]={items,page,source:scope,loading:false,error:page.cloudError || ""};
         }
         catch(error){const before=state.current.sidebar[section.id];next[section.id]={...(before?.source===scope?before:emptyList),loading:false,error:reason(error)};}
@@ -193,5 +199,5 @@ export function useLibraryReader(scope: string | undefined, enabled: boolean, ro
   },[main,sidebar,search,detail,ideaId,scope]);
   const counts=main.page?.counts || (navigation.current.scope===scope?navigation.current.counts:{});
   const cloudError=main.cloudError || main.page?.cloudError || (detail.id===ideaId?detail.cloudError:undefined);
-  return {library,main,sidebar,search,counts,detail:detail.id===ideaId?detail:null,cloudError,migrationRequired:main.migration,authRequired:main.auth || detail.id===ideaId && detail.auth,online,offline:!!scope && (!online || !!main.page?.offline || !!(ideaId && detail.offline)),refresh,refreshLocal,loadMore,expandSection,moreSearch};
+  return {library,main,sidebar,search,counts,detail:detail.id===ideaId?detail:null,cloudError,networkLoading,migrationRequired:main.migration,authRequired:main.auth || detail.id===ideaId && detail.auth,online,offline:!!scope && (!online || !!main.page?.offline || !!(ideaId && detail.offline)),refresh,refreshLocal,showLocalIdea,loadMore,expandSection,moreSearch};
 }

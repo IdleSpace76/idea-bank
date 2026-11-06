@@ -23,6 +23,6 @@ export async function PUT(request: Request) {
     const value=await readStorageBody(request), service=new EntityStorage(storage);
     if (!value || typeof value !== "object" || !("operationId" in value) || !("changes" in value)) return invalid();
     if ((await service.status()).requiresMigration) throw new StorageError(409,"MIGRATION_REQUIRED","Требуется переход на новую синхронизацию.");
-    return saveAndNotify(() => service.save(value));
+    return saveAndNotify(() => service.save(value),process.env,fetch,value.changes);
   });
 }

@@ -17,8 +17,8 @@ const origin=`http://127.0.0.1:${port}`,secret="scoped-synthetic-session-secret-
 const server=spawn(process.execPath,["node_modules/next/dist/bin/next","start","--hostname","127.0.0.1","--port",String(port)],{windowsHide:true,stdio:["ignore","pipe","pipe"],env:{...process.env,IDEA_BANK_AUTH_MODE:"github",AUTH_URL:origin,AUTH_SECRET:secret,AUTH_GITHUB_ID:"fixture",AUTH_GITHUB_SECRET:"fixture",IDEA_BANK_OWNER_ID:"12345",B2_S3_ENDPOINT:"https://s3.eu-central-003.backblazeb2.com",B2_REGION:"eu-central-003",B2_BUCKET_NAME:"fixture-bucket",B2_KEY_ID:"fixture",B2_APPLICATION_KEY:"fixture",ABLY_API_KEY:""}});
 server.stdout.resume();server.stderr.resume();let browser;
 const sockets=new Set(),channel="idea-bank:sync:"+"a".repeat(64);let serial=0;
-const broadcast=revision=>{for(const socket of sockets)if(socket.attached)socket.ws.send(JSON.stringify({action:15,channel,messages:[{name:"library-changed",data:{version:1,revision},id:`scoped:${serial++}:0`,timestamp:Date.now()}]}));};
-const calls=[],batches=[],errors=[];
+const broadcast=(revision,keys=[])=>{for(const socket of sockets)if(socket.attached)socket.ws.send(JSON.stringify({action:15,channel,messages:[{name:"library-changed",data:{version:2,revision,keys},id:`scoped:${serial++}:0`,timestamp:Date.now()}]}));};
+const calls=[],batches=[],errors=[],packets=[];
 async function scopedState(){return fixture.entities().readScoped({kind:"idea",id:"a"});}
 const blockText=async id=>(await scopedState()).records.find(record=>record.key===entityKey("block","a",id)).value?.text;
 try {
@@ -44,6 +44,7 @@ try {
       const reply=(value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)});
       try{
         if(url.pathname==="/api/sync/events/token")return reply({enabled:true,channel,token:"synthetic",expiresAt:Date.now()+900000});
+        if(url.pathname==="/api/reader/batch"){const input=request.postDataJSON(),value=await fixture.entities().readReaderBatch(input);packets.push({state,input,value});return reply(value);}
         if(url.pathname==="/api/catalog")return reply(await fixture.entities().catalog().readPage({limit:Number(url.searchParams.get("limit") || 24),cursor:url.searchParams.get("cursor") || undefined,sectionId:url.searchParams.get("sectionId") || undefined,query:url.searchParams.get("q") || undefined}));
         if(url.pathname.startsWith("/api/ideas/")){
           const result=await fixture.entities().catalog().readIdea(decodeURIComponent(url.pathname.split("/").pop()),request.headers()["if-none-match"]?.replaceAll('"',""));
@@ -56,7 +57,7 @@ try {
             if(body.target.kind==="idea" && body.target.id==="a")assert.ok(!read.records.some(record=>schema.keyParts(record.key).kind==="block" && schema.keyParts(record.key).ids[0]==="b"));
             return reply(read);
           }
-          batches.push(body);const result=await fixture.entities().save(body);broadcast(result.revision);
+          batches.push(body);const result=await fixture.entities().save(body);broadcast(result.revision,body.changes.map(change=>change.key));
           if(state.hold){state.entered?.();await state.hold;state.hold=null;}
           if(state.drop){state.drop=false;return route.abort("failed");}
           return reply(result);
@@ -111,6 +112,26 @@ try {
   await a.page.getByRole("dialog").getByRole("button",{name:"Сохранить",exact:true}).click();
   await expect(b.page.locator(".page-subtitle")).toHaveText("New generation",{timeout:20000});await phase(a.page,"synced");
   await delay(800);const stable=calls.length;await delay(2700);assert.equal(calls.length,stable,"Healthy notifications do not poll constantly");
+  // Missing broker messages are recovered by the same incremental checkpoint request.
+  const missingBase=await fixture.entities().catalogIndex(),missingKey=entityKey("block","a","two");
+  await fixture.entities().save({operationId:randomUUID(),heads:missingBase.heads,changes:[{key:missingKey,base:missingBase.index[missingKey],value:{...library.projects[0].blocks[1],text:"Missed notification recovered"}}]});
+  const beforeRecovery=packets.filter(packet=>packet.state===b.state).length;
+  await b.page.evaluate(()=>window.dispatchEvent(new Event("online")));
+  await expect(b.page.getByText("Missed notification recovered",{exact:true})).toBeVisible();
+  assert.equal(packets.filter(packet=>packet.state===b.state).length,beforeRecovery+1,"Reconnect recovers a missed event in one packet");
+  const recovered=packets.filter(packet=>packet.state===b.state).at(-1).value;
+  assert.equal(recovered.pages.length,0);assert.equal(recovered.bodies.length,0);
+  assert.ok(!JSON.stringify(recovered).includes("Never download me"));
+  // A newly created idea changes the other device's count without fetching its body.
+  await a.page.locator(".breadcrumbs button").first().click();await a.page.locator(".page-action-button").click();
+  await a.page.getByRole("dialog").getByLabel("Название",{exact:true}).fill("Metadata-only incoming idea");
+  await a.page.getByRole("dialog").getByRole("button",{name:"Создать идею",exact:true}).click();
+  const createdId=decodeURIComponent(new URL(a.page.url()).hash.split("/").pop());
+  await expect(b.page.locator(".sidebar .nav-item").filter({hasText:"Section"}).locator("small")).toHaveText("3");
+  assert.ok(!packets.some(packet=>packet.state===b.state && packet.input.bodies?.includes(createdId)),"Incoming new ideas are metadata-only until opened");
+  await a.page.getByRole("button",{name:"Действия с идеей",exact:true}).click();await a.page.getByRole("menuitem",{name:"Удалить идею",exact:true}).click();
+  await a.page.getByRole("dialog").getByRole("button",{name:"Удалить идею",exact:true}).click();
+  await expect(b.page.locator(".sidebar .nav-item").filter({hasText:"Section"}).locator("small")).toHaveText("2");
   assert.equal(calls.filter(call=>call.url==="/api/sync").length,0);assert.equal(calls.filter(call=>call.url==="/api/ideas/b").length,0);
   assert.ok(!batches.some(batch=>batch.changes.some(change=>schema.keyParts(change.key).ids[0]==="b")),"Closed ideas are never rewritten");
   assert.equal(errors.length,0,errors.join("\n"));for(const device of [a,b]){assert.ok(await device.page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await device.context.close();}

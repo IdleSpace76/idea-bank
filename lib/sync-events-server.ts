@@ -30,7 +30,7 @@ export function createSyncEventToken(env: Environment = process.env, now = Date.
 }
 
 /** A notification is only a hint. Bound its latency and never expose provider errors or credentials. */
-export async function publishSyncEvent(revision: string, env: Environment = process.env, send: typeof fetch = fetch): Promise<boolean> {
+export async function publishSyncEvent(revision: string, env: Environment = process.env, send: typeof fetch = fetch,keys?:string[]): Promise<boolean> {
   const settings = readSettings(env);
   if (!settings || !/^[a-f0-9-]{36}$/.test(revision)) return false;
   const controller = new AbortController();
@@ -40,7 +40,7 @@ export async function publishSyncEvent(revision: string, env: Environment = proc
     const publish = send(`https://rest.ably.io/channels/${encodeURIComponent(settings.channel)}/messages`, {
       method: "POST", cache: "no-store", redirect: "error", signal: controller.signal,
       headers: { Authorization: `Basic ${Buffer.from(settings.key).toString("base64")}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "library-changed", data: { version: 1, revision } }),
+      body: JSON.stringify({ name: "library-changed", data: keys && keys.length<=128 ? {version:2,revision,keys} : { version: 1, revision } }),
     }).then(response => {
       void response.body?.cancel().catch(() => {});
       return response.ok;
@@ -51,8 +51,9 @@ export async function publishSyncEvent(revision: string, env: Environment = proc
 }
 
 /** Publish only after the storage manifest commits, including an idempotent save retry. */
-export async function saveAndNotify<T extends { revision: string }>(save: () => Promise<T>, env: Environment = process.env, send: typeof fetch = fetch): Promise<T> {
+export async function saveAndNotify<T extends { revision: string }>(save: () => Promise<T>, env: Environment = process.env, send: typeof fetch = fetch,changes?:unknown): Promise<T> {
   const result = await save();
-  await publishSyncEvent(result.revision, env, send);
+  const keys=Array.isArray(changes)?changes.map(change=>change?.key).filter((key):key is string=>typeof key==="string" && key.length<=500):undefined;
+  await publishSyncEvent(result.revision, env, send,keys);
   return result;
 }

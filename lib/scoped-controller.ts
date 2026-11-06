@@ -7,21 +7,24 @@ import type { SyncChoices,EntityPlan } from "./entity-client";
 import type { SyncTarget } from "./scoped-types";
 import { markReaderStale } from "./reader-cache";
 import { cloudBackoffRemaining,retryCloudAccess } from "./cloud-access";
-type Options={canRun:()=>boolean;refresh:()=>void};
+type Options={canRun:()=>boolean;refresh:(localOnly?:boolean)=>void};
 /** Flush one durable edit domain at a time; events invalidate reads instead of downloading bodies. */
 export class ScopedSyncController {
   private view:SyncView={...initialSyncView,phase:"synced"};
   private listeners=new Set<()=>void>();
   private stopped=true;private running=false;private generation=0;private failures=0;
   private timer:ReturnType<typeof setTimeout>|null=null;private events:SyncEventsClient|null=null;
-  private cleanup:(()=>void)|null=null;private healthy=false;private refreshPending=false;
+  private cleanup:(()=>void)|null=null;private refreshPending=false;
+  private cloudRefreshPending=false;
+  private connectedOnce=false;
   private seen=new Set<string>();
+  private deferredRevisions=new Set<string>();
   constructor(readonly scope:string,private options:Options){}
   subscribe=(listener:()=>void)=>{this.listeners.add(listener);return()=>{this.listeners.delete(listener);};};
   getSnapshot=()=>this.view;
   private patch(value:Partial<SyncView>){this.view={...this.view,...value};for(const listener of this.listeners)listener();}
-  private schedule(delay:number,invalidate=false){if(this.stopped || document.visibilityState==="hidden")return;if(this.timer)clearTimeout(this.timer);this.timer=setTimeout(()=>{this.timer=null;if(invalidate)this.refreshPending=true;void this.check(false,undefined,true);},Math.max(delay,cloudBackoffRemaining()));}
-  private refresh(afterBatch=false){if(this.running && !afterBatch){this.refreshPending=true;return;}if(this.options.canRun()){this.refreshPending=false;this.options.refresh();}else this.refreshPending=true;}
+  private schedule(delay:number,invalidate=false){if(this.stopped || document.visibilityState==="hidden")return;if(this.timer)clearTimeout(this.timer);this.timer=setTimeout(()=>{this.timer=null;if(invalidate){this.refreshPending=true;this.cloudRefreshPending=true;}void this.check(false,undefined,true);},Math.max(delay,cloudBackoffRemaining()));}
+  private refresh(afterBatch=false,localOnly=false){if(!localOnly)this.cloudRefreshPending=true;if(this.running && !afterBatch){this.refreshPending=true;return;}if(this.options.canRun()){this.refreshPending=false;const local=!this.cloudRefreshPending;this.cloudRefreshPending=false;this.options.refresh(local);}else this.refreshPending=true;}
   start(){
     if(!this.stopped)return;this.stopped=false;this.generation++;
     const wake=()=>{if(document.visibilityState==="hidden"){if(this.timer)clearTimeout(this.timer);this.timer=null;return;}if(navigator.onLine===false)this.patch({phase:"offline"});else{if(this.view.phase==="auth")this.patch({phase:"waiting"});this.schedule(100);}};
@@ -30,13 +33,15 @@ export class ScopedSyncController {
     window.addEventListener("online",wake);window.addEventListener("offline",offline);window.addEventListener("focus",wake);document.addEventListener("visibilitychange",wake);
     this.events=new SyncEventsClient({onRevision:revision=>{
       if(this.stopped || this.seen.has(revision))return;this.seen.add(revision);while(this.seen.size>512)this.seen.delete(this.seen.values().next().value!);
-      void markReaderStale(this.scope).catch(()=>{});this.refreshPending=true;this.schedule(250);
-    },onConnection:ready=>{this.healthy=ready;if(ready){this.refreshPending=true;this.schedule(250);}else if(!this.running)this.schedule(60000);}});
+      // The broker can echo our PUT before its HTTP response arrives.
+      if(this.running){this.seen.delete(revision);this.deferredRevisions.add(revision);while(this.deferredRevisions.size>512)this.deferredRevisions.delete(this.deferredRevisions.values().next().value!);return;}
+      void markReaderStale(this.scope).catch(()=>{});this.refreshPending=true;this.cloudRefreshPending=true;this.schedule(250);
+    },onConnection:ready=>{if(ready){if(!this.connectedOnce){this.connectedOnce=true;return;}this.refreshPending=true;this.cloudRefreshPending=true;this.schedule(250);}else if(!this.running)this.schedule(600000);}});
     this.events.start();this.cleanup=()=>{unsubscribe();window.removeEventListener("online",wake);window.removeEventListener("offline",offline);window.removeEventListener("focus",wake);document.removeEventListener("visibilitychange",wake);};
     if(navigator.onLine===false)offline();else this.schedule(100);
   }
   stop(){this.stopped=true;this.generation++;if(this.timer)clearTimeout(this.timer);this.timer=null;this.events?.stop();this.events=null;this.cleanup?.();this.cleanup=null;}
-  contextChanged(){if(this.options.canRun() && !["conflict","auth","error"].includes(this.view.phase)){if(this.refreshPending)this.refresh();this.schedule(1200);}}
+  contextChanged(){if(this.options.canRun() && !["conflict","auth","error"].includes(this.view.phase)){if(this.refreshPending)this.refresh(false,true);this.schedule(1200);}}
   review(plan:ScopedPlan){this.patch({phase:"conflict",plan,error:"",busy:false});}
   resolve=async(plan:EntityPlan,choices:SyncChoices={})=>{
     const scoped=plan as ScopedPlan;
@@ -55,7 +60,7 @@ export class ScopedSyncController {
     if(!automatic)retryCloudAccess();
     if(!this.options.canRun()){this.refreshPending=true;this.schedule(2000);return;}
     if(automatic && !resolution && ["conflict","auth","error"].includes(this.view.phase))return;
-    if(!automatic)this.refreshPending=true;
+    if(!automatic){this.refreshPending=true;this.cloudRefreshPending=true;}
     this.running=true;const generation=this.generation;
     if(this.timer)clearTimeout(this.timer);this.timer=null;
     const valid=()=>!this.stopped && generation===this.generation && this.options.canRun();
@@ -72,16 +77,16 @@ export class ScopedSyncController {
           const result=await flushScoped(entry,resolution?.choices,resolution?{...resolution.plan.read,target:resolution.plan.target}:undefined,message=>this.patch({status:message}),()=>valid()&&lock());
           resolution=undefined;
           if("plan" in result){if(valid())this.review(result.plan);return;}
-          if("read" in result)for(const revision of result.read.heads)this.seen.add(revision);
+          if("read" in result && result.ownRevision)this.seen.add(result.ownRevision);
           while(this.seen.size>512)this.seen.delete(this.seen.values().next().value!);
-          if(valid())this.refresh();
+          if(valid())this.refresh(false,true);
         }
       });
       if(valid() && this.view.phase!=="conflict"){
         this.failures=0;
         const remaining=(await readScopedIndex()).some(row=>row.scope===this.scope);
         this.patch({phase:remaining?"waiting":"synced",error:"",plan:null,lastSync:new Date().toISOString(),status:"Изменения идей синхронизированы."});
-        if(this.refreshPending)this.refresh(true);this.schedule(remaining?1200:this.healthy?600000:60000,!remaining);
+        if(this.refreshPending)this.refresh(true,true);this.schedule(remaining?1200:600000,!remaining);
       }
     }catch(error){
       if(!this.stopped && generation===this.generation){
@@ -91,6 +96,15 @@ export class ScopedSyncController {
         this.patch({phase:auth?"auth":fatal?"error":error instanceof ScopedError && error.code==="STORAGE_ACCESS_DENIED"?"unavailable":"retry",error:error instanceof Error?error.message:"Не удалось выполнить облачный запрос."});
         if(!auth&&!fatal)this.schedule([2000,5000,10000,30000,60000,120000,300000][Math.min(this.failures++,6)]);
       }
-    }finally{finishBatch();this.running=false;if(!this.stopped && generation===this.generation)this.patch({busy:false});}
+    }finally{
+      finishBatch();this.running=false;
+      if(!this.stopped && generation===this.generation) {
+        this.patch({busy:false});
+        if([...this.deferredRevisions].some(revision=>!this.seen.has(revision))) {
+          void markReaderStale(this.scope).catch(()=>{});this.refreshPending=true;this.cloudRefreshPending=true;this.schedule(250);
+        }
+      }
+      this.deferredRevisions.clear();
+    }
   };
 }

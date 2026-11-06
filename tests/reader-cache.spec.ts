@@ -77,7 +77,7 @@ test("offline reading preserves previously synced originals; a cloud deletion in
     return {idea,page};
   });
   expect(offline.idea.offline).toBe(true);expect(offline.idea.idea.blocks.length).toBeGreaterThan(0);expect(offline.page.offline).toBe(true);
-  await page.route("**/api/ideas/example",route=>route.fulfill({status:404,contentType:"application/json",body:JSON.stringify({error:{code:"NOT_FOUND",message:"Deleted"}})}));
+  await page.route("**/api/reader/batch",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({heads:[],revision:"0".repeat(64),reset:true,pages:[],changes:{index:{},records:[],previous:[]},bodies:[{id:"example",error:{code:"NOT_FOUND",message:"Deleted"}}],media:[]})}));
   const deleted=await page.evaluate(async()=>{
     const root="/__local_fixture__/",reader=await import(root+"library-reader.js"),cache=await import(root+"reader-cache.js"),store=await import(root+"library-store.js");
     await cache.writeReaderCache("cloud","idea","example",{idea:(await store.readLocalLibrary()).projects[0],version:"a".repeat(64),offline:false});

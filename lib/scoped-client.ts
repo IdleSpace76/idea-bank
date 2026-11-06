@@ -23,6 +23,8 @@ export async function readTarget(target:SyncTarget,known?:ScopedRead,includeMedi
 }
 export function scopedPlan(entry:ScopedEntry,read:ScopedRead,local=entry.local,baseline?:EntityMap):ScopedPlan {
   const before=validateRead(entry.base,{},{}),remote=validateRead(read,{},{});
+  // The selected parent is a dependency of a new idea, never an edit of that section.
+  if(entry.creationParent && !entry.base.index[entityKey("idea",entry.target.id)])before.remote[entityKey("section",entry.creationParent.id)]=entry.creationParent;
   let expected:import("./ideas").Library={version:1,sections:[],projects:[]};
   try{expected=assembleLibrary(local);}catch{/* Structural conflicts are presented by resolvePlan, not guessed here. */}
   const plan:ScopedPlan={scope:entry.scope,target:entry.target,sequence:entry.sequence,expected,local,base:baseline || before.remote,...remote,read,sources:[],first:false,conflicts:[]};
@@ -86,9 +88,9 @@ async function finish(entry:ScopedEntry,read:ScopedRead,base:EntityMap,committed
   if(plan.conflicts.length){const next=await rebaseScoped(entry,committed || read,base);return {plan:scopedPlan(next || entry,read)};}
   const values=resolvePlan(plan).values,library=assembleLibrary(values),idea=library.projects.find(idea=>idea.id===entry.target.id);
   await settleScoped(entry,read,values,idea?{idea,version:await versionOf(read,idea)}:undefined,committed);
-  return {read};
+  return {read,...(committed?.heads.length===1?{ownRevision:committed.heads[0]}:{})};
 }
-export async function flushScoped(entry:ScopedEntry,choices:SyncChoices={},choiceIndex?:ScopedRead,progress:(message:string)=>void=()=>{},allowed:()=>boolean=()=>true,attempt=0):Promise<{plan:ScopedPlan}|{read:ScopedRead}|{retry:boolean}> {
+export async function flushScoped(entry:ScopedEntry,choices:SyncChoices={},choiceIndex?:ScopedRead,progress:(message:string)=>void=()=>{},allowed:()=>boolean=()=>true,attempt=0):Promise<{plan:ScopedPlan}|{read:ScopedRead;ownRevision?:string}|{retry:boolean}> {
   if(!allowed())throw new ScopedError("SYNC_PAUSED","Синхронизация приостановлена.");
   if(attempt>3)throw new ScopedError("NETWORK","Запись изменилась на другом устройстве. Повтори синхронизацию.");
   if(entry.operation) {
@@ -128,5 +130,5 @@ export async function flushScoped(entry:ScopedEntry,choices:SyncChoices={},choic
   return flushScoped({...entry,operation},{},undefined,progress,allowed,attempt+1);
 }
 export async function queuePrepared(entry:ScopedEntry,library:import("./ideas").Library) {
-  return queueScoped(entry.scope,entry.target,entry.base,scopedLocal(entry,library),entry.sequence);
+  return queueScoped(entry.scope,entry.target,entry.base,scopedLocal(entry,library),entry.sequence,entry.creationParent);
 }

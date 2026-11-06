@@ -34,7 +34,7 @@ try {
     await context.addCookies([{name:cookie,value:token,url:origin,httpOnly:true,sameSite:"Lax"}]);
     await context.addInitScript(()=>localStorage.setItem("idea-bank.language","ru"));
     await context.addInitScript(()=>{const native=indexedDB.open.bind(indexedDB);window.__databaseOpens=0;indexedDB.open=(name,version)=>{if(name==="idea-bank.local")window.__databaseOpens++;return native(name,version);};});
-    const calls=[],batches=[],errors=[];let offline=false,denied=false,heldIdeaRead=null,heldCatalogRead=null,heldScopedWrite=null;
+    const calls=[],batches=[],errors=[];let offline=false,denied=false,heldIdeaRead=null,heldCatalogRead=null,heldScopedWrite=null,heldScopedRead=null;
     await context.route("https://s3.eu-central-003.backblazeb2.com/**",async route=>{
       if(offline)return route.abort("failed");
       const request=route.request(),key=decodeURIComponent(new URL(request.url()).pathname).replace(/^\/fixture-bucket\//,""),headers={"Access-Control-Allow-Origin":"*","Access-Control-Allow-Methods":"GET,PUT,OPTIONS","Access-Control-Allow-Headers":"content-type,content-md5,x-amz-meta-sha256"};
@@ -48,14 +48,19 @@ try {
       return route.fulfill({status:200,contentType:object.type,headers:{...headers,"Content-Length":String(object.body.length)},body:object.body});
     });
     await context.route("**/api/**",async route=>{
-      const request=route.request(),url=new URL(request.url());calls.push({path:url.pathname,query:url.search,method:request.method(),etag:request.headers()["if-none-match"]});
+      const request=route.request(),url=new URL(request.url());calls.push({path:url.pathname,query:url.search,method:request.method(),etag:request.headers()["if-none-match"],...(url.pathname==="/api/reader/batch"?{body:request.postDataJSON()}:{})});
       if(offline)return route.abort("failed");
       const reply=(body,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(body)});
-      if(denied && (url.pathname==="/api/catalog" || url.pathname.startsWith("/api/ideas/") || url.pathname==="/api/sync/scoped"))return reply({error:{code:"STORAGE_ACCESS_DENIED",message:"B2 отклонил запрос: проверьте лимиты операций и права ключа. Автоматические запросы приостановлены на пять минут."}},503);
+      if(denied && (url.pathname==="/api/reader/batch" || url.pathname==="/api/catalog" || url.pathname.startsWith("/api/ideas/") || url.pathname==="/api/sync/scoped"))return reply({error:{code:"STORAGE_ACCESS_DENIED",message:"B2 отклонил запрос: проверьте лимиты операций и права ключа. Автоматические запросы приостановлены на пять минут."}},503);
       try {
+        if(url.pathname==="/api/reader/batch") {
+          const body=request.postDataJSON();if(heldCatalogRead && body.pages?.length)await heldCatalogRead;
+          if(heldIdeaRead && (body.bodies?.length || body.watch?.length))await heldIdeaRead;
+          return reply(await fixture.entities().readReaderBatch(body));
+        }
         if(url.pathname==="/api/sync/scoped") {
           const body=request.postDataJSON();
-          if(request.method()==="POST")return reply(await fixture.entities().readScoped(body.target,body.includeIdeas,body.includeMedia));
+          if(request.method()==="POST"){if(heldScopedRead)await heldScopedRead;return reply(await fixture.entities().readScoped(body.target,body.includeIdeas,body.includeMedia));}
           if(heldScopedWrite)await heldScopedWrite;
           batches.push(body);return reply(await fixture.entities().save(body));
         }
@@ -84,10 +89,12 @@ try {
     assert.equal(calls.filter(call=>call.path==="/api/sync").length,0,"Browsing never downloads a full synchronization snapshot");
     assert.equal(calls.filter(call=>call.path.startsWith("/api/ideas/")).length,0,"Cards do not request document bodies");
     await delay(1200);
+    assert.equal(calls.filter(call=>call.path==="/api/reader/batch").length,2,"Initial metadata uses one packet; its visible uncached cover uses one media packet");
     assert.equal(await page.evaluate(()=>window.__databaseOpens),1,"Initial cloud reading reuses one IndexedDB connection");
-    const sidebarCalls=()=>calls.filter(call=>call.path==="/api/catalog" && new URLSearchParams(call.query).get("sectionId")==="s" && new URLSearchParams(call.query).get("limit")==="4").length;
-    const initialSidebar=sidebarCalls();assert.equal(initialSidebar,1);
-    const readCalls=()=>calls.filter(call=>call.path==="/api/catalog" || call.path.startsWith("/api/ideas/")).length;
+    const sidebarCalls=()=>calls.filter(call=>call.path==="/api/reader/batch" && call.body.pages?.some(page=>page.sectionId==="s" && page.limit===4)).length;
+    const ideaReadCalls=id=>calls.filter(call=>call.path==="/api/reader/batch" && (call.body.bodies?.includes(id) || call.body.watch?.includes(id))).length;
+    const initialSidebar=sidebarCalls();assert.equal(initialSidebar,0,"The first packet already contains sidebar metadata");
+    const readCalls=()=>calls.filter(call=>call.path==="/api/reader/batch").length;
     const beforeFocus=readCalls();
     await page.evaluate(()=>{for(let n=0;n<20;n++){window.dispatchEvent(new Event("focus"));document.dispatchEvent(new Event("visibilitychange"));}});
     await delay(800);
@@ -97,11 +104,11 @@ try {
     await firstCard.click();
     await expect(page.getByRole("heading",{name:"Document 0",exact:true})).toBeVisible();
     await expect(page.locator(".image-preview img")).toHaveAttribute("src",/^blob:/);
-    assert.equal(calls.filter(call=>call.path==="/api/ideas/idea-0000").length,1);
+    assert.equal(ideaReadCalls("idea-0000"),1);
     await home();await firstCard.click();
     await expect(page.getByRole("heading",{name:"Document 0",exact:true})).toBeVisible();
     await delay(250);
-    assert.equal(calls.filter(call=>call.path==="/api/ideas/idea-0000").length,1,"Returning to a verified idea reuses its body without another B2 check");
+    assert.equal(ideaReadCalls("idea-0000"),1,"Returning to a verified idea reuses its body without another B2 check");
     await home();await page.locator(".section-open").click();
     await expect(page.locator(".project-card")).toHaveCount(24);
     const beforeNavigation=readCalls();
@@ -113,10 +120,10 @@ try {
     assert.equal(readCalls(),beforeNavigation,"Repeated home/section navigation produces zero catalog or idea HTTP requests");
     await home();
     let releaseCatalog;heldCatalogRead=new Promise(resolve=>releaseCatalog=resolve);
-    const beforeCatalogReload=calls.filter(call=>call.path==="/api/catalog").length;
+    const beforeCatalogReload=calls.filter(call=>call.path==="/api/reader/batch" && call.body.pages?.length).length;
     await page.reload();
     await expect(page.locator(viewport.width<540?".recent-project-item":".project-card-shell")).toHaveCount(viewport.width<540?4:24);
-    await expect.poll(()=>calls.filter(call=>call.path==="/api/catalog").length).toBeGreaterThan(beforeCatalogReload);
+    await expect.poll(()=>calls.filter(call=>call.path==="/api/reader/batch" && call.body.pages?.length).length).toBeGreaterThan(beforeCatalogReload);
     await expect(page.getByText("Загружаем идеи…",{exact:true})).toHaveCount(0);
     releaseCatalog();heldCatalogRead=null;
     await expect(page.locator(".local-status")).toHaveAttribute("data-sync-phase","synced");
@@ -130,19 +137,19 @@ try {
     await fixture.entities().save({operationId:randomUUID(),heads:source.heads,changes:[{key,base:source.index[key],value:{...library.projects[0].blocks[0],text:`Updated ${viewport.width}`}}]});
     // A delayed version check must leave the existing document mounted and readable.
     let releaseRead;heldIdeaRead=new Promise(resolve=>releaseRead=resolve);
-    const beforeRefresh=calls.filter(call=>call.path==="/api/ideas/idea-0000").length;
+    const beforeRefresh=ideaReadCalls("idea-0000");
     await page.getByRole("heading",{name:"Document 0",exact:true}).evaluate(element=>element.dataset.continuity="kept");
     await page.evaluate(()=>window.dispatchEvent(new Event("online")));
-    await expect.poll(()=>calls.filter(call=>call.path==="/api/ideas/idea-0000").length).toBeGreaterThan(beforeRefresh);
+    await expect.poll(()=>ideaReadCalls("idea-0000")).toBeGreaterThan(beforeRefresh);
     await expect(page.getByRole("heading",{name:"Document 0",exact:true})).toHaveAttribute("data-continuity","kept");
     await expect(page.getByText("Body 0",{exact:true})).toBeVisible();
     await expect(page.getByText("Загружаем идею…",{exact:true})).toHaveCount(0);
     releaseRead();heldIdeaRead=null;
     await expect(page.getByText(`Updated ${viewport.width}`,{exact:true})).toBeVisible();
     // Reload has no in-memory document: show the persisted cache before the cloud responds.
-    const beforeReload=calls.filter(call=>call.path==="/api/ideas/idea-0000").length;
+    const beforeReload=ideaReadCalls("idea-0000");
     heldIdeaRead=new Promise(resolve=>releaseRead=resolve);await page.reload();
-    await expect.poll(()=>calls.filter(call=>call.path==="/api/ideas/idea-0000").length).toBeGreaterThan(beforeReload);
+    await expect.poll(()=>ideaReadCalls("idea-0000")).toBeGreaterThan(beforeReload);
     await expect(page.getByText(`Updated ${viewport.width}`,{exact:true})).toBeVisible();
     await expect(page.getByText("Загружаем идею…",{exact:true})).toHaveCount(0);
     releaseRead();heldIdeaRead=null;
@@ -163,8 +170,8 @@ try {
     await page.locator(".projects-toolbar input").fill("");await page.locator(".section-open").click();
     await expect(page.locator(".project-card")).toHaveCount(24);
     await page.evaluate(()=>window.scrollTo(0,document.documentElement.scrollHeight));
-    await expect.poll(()=>page.locator(".project-card").count()).toBeGreaterThan(24);
-    assert.ok(calls.some(call=>call.path==="/api/catalog" && call.query.includes("cursor=")));
+    try{await expect.poll(()=>page.locator(".project-card").count()).toBeGreaterThan(24);}catch(error){throw new Error(`${error.message}\nRecent requests: ${JSON.stringify(calls.slice(-6))}\nStatus: ${await page.locator('[role="alert"]').allTextContents()}`);}
+    assert.ok(calls.some(call=>call.path==="/api/reader/batch" && call.body.pages?.some(page=>page.cursor)));
     await delay(350);
     assert.equal(sidebarCalls(),beforeBrowsingSidebar,"Search, route changes and pagination do not reload an unchanged sidebar");
     // The compatibility write path must not interpret the remaining 976 ideas as deletions.
@@ -197,7 +204,11 @@ try {
     await page.getByRole("dialog").getByLabel("Название",{exact:true}).fill("Temporary idea");
     const cover=await page.evaluate(()=>{const canvas=document.createElement("canvas");canvas.width=8;canvas.height=8;canvas.getContext("2d").fillRect(0,0,8,8);return canvas.toDataURL().split(",")[1];});
     await page.getByRole("dialog").getByLabel("Загрузить свою обложку",{exact:true}).setInputFiles({name:"new-cover.png",mimeType:"image/png",buffer:Buffer.from(cover,"base64")});
-    let releaseWrite;heldScopedWrite=new Promise(resolve=>{releaseWrite=resolve;});
+    await expect(page.locator(".local-status")).toHaveAttribute("data-sync-phase","synced");
+    await delay(400);
+    let releaseWrite,releaseScopedRead;heldScopedWrite=new Promise(resolve=>{releaseWrite=resolve;});heldScopedRead=new Promise(resolve=>{releaseScopedRead=resolve;});
+    const readsBeforeCreation=calls.filter(call=>call.path==="/api/reader/batch").length;
+    const creationCallIndex=calls.length;
     await page.getByRole("dialog").getByRole("button",{name:"Создать идею",exact:true}).click();
     await expect(page.getByRole("heading",{name:"Temporary idea",exact:true})).toBeVisible();
     try {
@@ -205,12 +216,18 @@ try {
       await home();
       await expect(page.locator(".section-open").filter({hasText:`Temporary ${viewport.width}`})).toContainText("Идей: 1");
       assert.equal((await fixture.entities().catalog().readPage()).total,1000,"Counts update before the cloud write completes");
-    } finally {heldScopedWrite=null;releaseWrite();}
+      assert.equal(calls.filter(call=>call.path==="/api/reader/batch").length,readsBeforeCreation,"Creation and local navigation do not re-download cards or the new body");
+    } finally {heldScopedRead=null;releaseScopedRead();heldScopedWrite=null;releaseWrite();}
     await page.locator(".section-open").filter({hasText:`Temporary ${viewport.width}`}).click();
     await page.locator(".project-card").filter({hasText:"Temporary idea"}).click();
     const temporary=decodeURIComponent(new URL(page.url()).hash.split("/").pop());
     await expect.poll(async()=>{try{return (await fixture.entities().catalog().readIdea(temporary)).idea.name;}catch{return "";}},{timeout:15000}).toBe("Temporary idea");
     await expect(page.locator(".local-status")).toHaveAttribute("data-sync-phase","synced");
+    await home();
+    await expect(page.locator(".section-open").filter({hasText:`Temporary ${viewport.width}`})).toContainText("Идей: 1");
+    assert.equal(calls.filter(call=>call.path==="/api/reader/batch").length,readsBeforeCreation,`Acknowledging our own create reuses the sync result instead of downloading the catalog again: ${JSON.stringify(calls.slice(creationCallIndex))}`);
+    await page.locator(".section-open").filter({hasText:`Temporary ${viewport.width}`}).click();
+    await page.locator(".project-card").filter({hasText:"Temporary idea"}).click();
     await page.getByRole("button",{name:"Добавить блок",exact:true}).click();
     await page.getByLabel("Заголовок блока",{exact:true}).fill("Temporary block");await page.getByLabel("Текст",{exact:true}).fill("Temporary text");
     await page.getByRole("button",{name:"Сохранить идею",exact:true}).click();
@@ -238,10 +255,10 @@ try {
     await page.getByRole("button",{name:"Сохранить идею",exact:true}).click();
     await delay(1500);
     await expect(page.getByText("Облако недоступно · сохранённая версия",{exact:true})).toBeVisible();
-    const pausedCalls=calls.filter(call=>call.path==="/api/catalog" || call.path.startsWith("/api/ideas/") || call.path==="/api/sync/scoped").length;
+    const pausedCalls=calls.filter(call=>call.path==="/api/reader/batch" || call.path==="/api/sync/scoped").length;
     await page.evaluate(()=>{for(let n=0;n<10;n++){window.dispatchEvent(new Event("focus"));window.dispatchEvent(new Event("online"));}});
     await delay(1800);
-    assert.equal(calls.filter(call=>call.path==="/api/catalog" || call.path.startsWith("/api/ideas/") || call.path==="/api/sync/scoped").length,pausedCalls,"Focus, reconnect and a pending edit cannot bypass the B2 cooldown");
+    assert.equal(calls.filter(call=>call.path==="/api/reader/batch" || call.path==="/api/sync/scoped").length,pausedCalls,"Focus, reconnect and a pending edit cannot bypass the B2 cooldown");
     assert.ok(!(await fixture.entities().catalog().readIdea("idea-0000")).idea.blocks.some(block=>block.heading===queuedHeading));
     denied=false;await page.locator(".local-status").click();
     await page.getByRole("button",{name:"Синхронизировать",exact:true}).click();

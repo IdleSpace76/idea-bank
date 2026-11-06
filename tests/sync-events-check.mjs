@@ -42,6 +42,10 @@ assert.equal(calls[0].url, `https://rest.ably.io/channels/${encodeURIComponent(i
 assert.equal(calls[0].init.redirect, "error");
 assert.equal(calls[0].init.headers.Authorization, `Basic ${Buffer.from(env.ABLY_API_KEY).toString("base64")}`);
 assert.deepEqual(JSON.parse(calls[0].init.body), { name: "library-changed", data: { version: 1, revision } });
+const hints=[];
+await saveAndNotify(async()=>result,env,async(_url,init)=>{hints.push(JSON.parse(init.body));return new Response(null,{status:201});},[{key:'idea:["example"]',value:{name:"Private title"}}]);
+assert.deepEqual(hints,[{name:"library-changed",data:{version:2,revision,keys:['idea:["example"]']}}]);
+assert.ok(!JSON.stringify(hints).includes("Private title"));
 await assert.rejects(() => saveAndNotify(async () => { throw new Error("Storage failed"); }, env, send), /Storage failed/);
 assert.equal(calls.length, 1, "Failed save sends no event");
 assert.equal(await saveAndNotify(async () => result, env, send), result);

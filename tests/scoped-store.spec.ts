@@ -40,6 +40,6 @@ test("queue write failures roll back and notifications invalidate only cache met
     try{await cache.markReaderStale("scope");}finally{IDBObjectStore.prototype.get=get;}
     return {before,after:await store.readScopedIndex(),failed,reads,pending:await store.readScopedEntry("scope",target)};
   });
-  expect(result.failed).toBe(true);expect(result.after).toEqual(result.before);expect(result.pending).toBeUndefined();expect(result.reads).toEqual(["reader-cache-v1"]);
+  expect(result.failed).toBe(true);expect(result.after).toEqual(result.before);expect(result.pending).toBeUndefined();expect(result.reads).toEqual(["reader-cache-v1","reader-epoch:scope"]);
   expect(await page.evaluate(readStoredLibrary)).toEqual(original);
 });

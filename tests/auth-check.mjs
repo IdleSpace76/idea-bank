@@ -61,7 +61,7 @@ await withServer("github", async origin => {
     assert.ok(response.headers.get("cache-control").includes("no-store"));
     assert.equal((await fetch(`${origin}/api/storage/${path}`, { method, headers: { Cookie: await sessionCookie("67890") } })).status, 401, "Other accounts cannot access storage");
   }
-  for (const [path,method] of [["sync/scoped","POST"],["sync/scoped","PUT"],["catalog","GET"],["catalog/media?id=bad","GET"],["ideas/example","GET"],["sync","GET"],["sync","POST"],["sync","PUT"],["sync/media","GET"],["sync/events/token","POST"]]) {
+  for (const [path,method] of [["reader/batch","POST"],["sync/scoped","POST"],["sync/scoped","PUT"],["catalog","GET"],["catalog/media?id=bad","GET"],["ideas/example","GET"],["sync","GET"],["sync","POST"],["sync","PUT"],["sync/media","GET"],["sync/events/token","POST"]]) {
     const response=await fetch(`${origin}/api/${path}`,{method}); assert.equal(response.status,401);
     assert.equal((await fetch(`${origin}/api/${path}`,{method,headers:{Cookie:await sessionCookie("67890")}})).status,401);
     if(method!=="GET")assert.equal((await fetch(`${origin}/api/${path}`,{method,headers:{Cookie:ownerCookie,Origin:"https://other.example","Content-Type":"application/json"},body:"{}"})).status,403);
@@ -111,6 +111,7 @@ await withServer("github", async origin => {
   try {
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }, { width: 320, height: 844 }]) {
       const context = await browser.newContext({ viewport });
+      await context.route("**/api/reader/batch",route=>route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:{code:"UNAVAILABLE",message:"Fixture storage unavailable"}})}));
       await context.route("**/api/catalog**",route=>route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:{code:"UNAVAILABLE",message:"Fixture storage unavailable"}})}));
       await context.route("**/api/sync/events/token",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({enabled:false})}));
       const page = await context.newPage();

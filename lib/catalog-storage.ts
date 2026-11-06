@@ -24,7 +24,8 @@ const conflict = (): never => { throw new StorageError(409, "IDEA_CONFLICT", "У
 /** Immutable read views. The small live frontier replaces history listing on ordinary reads. */
 export class CatalogStorage {
   readonly prefix: string;
-  constructor(private readonly entities: EntityStorage) { this.prefix = `${entities.prefix}/catalog-v1`; }
+  private rootRead?:Promise<CatalogRoot>;
+  constructor(private readonly entities: EntityStorage,private readonly source?:{heads:string[];index:EntityIndex}) { this.prefix = `${entities.prefix}/catalog-v1`; }
   private get storage() { return this.entities.storage; }
   private async get(key: string, cache = true): Promise<unknown | null> {
     if (cache && key.startsWith(`${this.prefix}/objects/`)) return cachedStorageRead(this.storage,key,()=>this.get(key,false));
@@ -91,12 +92,13 @@ export class CatalogStorage {
     if (ids.length > 16) throw new StorageError(409, "TOO_MANY_BRANCHES", "Сначала объедини версии библиотеки через синхронизацию.");
     return ids.sort();
   }
-  private async root(): Promise<CatalogRoot> {
-    let tips = await this.frontier();
+  private root():Promise<CatalogRoot> {return this.rootRead ??= this.loadRoot();}
+  private async loadRoot(): Promise<CatalogRoot> {
+    let tips = this.source?.heads || await this.frontier();
     if (!tips.length) {
       const emptyKey = `${this.prefix}/views/${hash(["reader-2",[]])}.json`;
       // Existing v2 libraries need a read index, not a data migration. Never load their blocks here.
-      const source = await this.entities.catalogIndex();
+      const source = this.source || await this.entities.catalogIndex();
       for (const id of source.heads) await this.publish(id, []);
       tips = await this.frontier();
       if (!tips.length && !source.heads.length) {
@@ -110,7 +112,7 @@ export class CatalogStorage {
     return cachedStorageRead(this.storage,`projection:${key}`,async () => {
       const saved = await this.get(key) as { root?: string } | null;
       if (saved) return this.object<CatalogRoot>(saved.root || "");
-      const root = await this.build(await this.entities.catalogIndex(tips));
+      const root = await this.build(this.source || await this.entities.catalogIndex(tips));
       await this.put(key, { root: await this.content(root) });
       return root;
     });
