@@ -6,7 +6,7 @@ import { translate as t } from "./i18n";
 
 export type LocalSnapshot = { library: Library; revision: number };
 export type LocalCatalogCursor = { offset: number; revision: number; sectionId?: string; query?: string };
-export type LocalCatalogPage = { ideas: IdeaSummary[]; revision: number; nextCursor: LocalCatalogCursor | null; total: number };
+export type LocalCatalogPage = { ideas: IdeaSummary[]; sections:Section[]; counts:Record<string,number>; revision: number; nextCursor: LocalCatalogCursor | null; total: number };
 export type PendingChange = { entity: "section" | "idea" | "block"; id: string; ideaId?: string; operation: "put" | "delete"; sequence: number; base: unknown; value: unknown };
 type Layout = { revision: number; sectionIds: string[]; ideaIds: string[]; catalog?: { id: string; sectionId: string; updatedAt: string }[] };
 type IdeaRecord = { value: Project; blockIds: string[] };
@@ -72,7 +72,9 @@ export async function readLocalCatalogPage(options: { limit?: number; cursor?: L
     const total = matching?.length ?? ids.length;
     const ideas = matching ? matching.slice(offset, offset + limit) : await Promise.all(ids.slice(offset, offset + limit).map(read));
     const checked = parseLibrary(JSON.stringify({ version: 1, sections, projects: ideas }));
-    return { ideas: checked.projects.map(summarizeIdea), revision: layout.revision,
+    const counts:Record<string,number>=Object.create(null);
+    for(const idea of layout.catalog || [])counts[idea.sectionId]=(counts[idea.sectionId] || 0)+1;
+    return { ideas: checked.projects.map(summarizeIdea), sections:checked.sections,counts,revision: layout.revision,
       total, nextCursor: offset + limit < total ? { offset: offset + limit, revision: layout.revision, ...(options.sectionId ? { sectionId: options.sectionId } : {}), ...(query ? { query } : {}) } : null };
   });
 }

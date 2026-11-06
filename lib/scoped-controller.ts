@@ -2,7 +2,7 @@ import { SyncEventsClient } from "./sync-events-client";
 import { withSyncLock } from "./sync-lock";
 import { initialSyncView,type SyncView } from "./sync-controller";
 import { flushScoped,scopedPlan,type ScopedPlan,ScopedError } from "./scoped-client";
-import { queueScoped,readScopedEntry,readScopedIndex,subscribeScoped } from "./scoped-store";
+import { queueScoped,readScopedEntry,readScopedIndex,subscribeScoped,beginScopedBatch } from "./scoped-store";
 import type { SyncChoices,EntityPlan } from "./entity-client";
 import type { SyncTarget } from "./scoped-types";
 import { markReaderStale } from "./reader-cache";
@@ -21,12 +21,12 @@ export class ScopedSyncController {
   getSnapshot=()=>this.view;
   private patch(value:Partial<SyncView>){this.view={...this.view,...value};for(const listener of this.listeners)listener();}
   private schedule(delay:number,invalidate=false){if(this.stopped || document.visibilityState==="hidden")return;if(this.timer)clearTimeout(this.timer);this.timer=setTimeout(()=>{this.timer=null;if(invalidate)this.refreshPending=true;void this.check(false,undefined,true);},Math.max(delay,cloudBackoffRemaining()));}
-  private refresh(){if(this.options.canRun()){this.refreshPending=false;this.options.refresh();}else this.refreshPending=true;}
+  private refresh(afterBatch=false){if(this.running && !afterBatch){this.refreshPending=true;return;}if(this.options.canRun()){this.refreshPending=false;this.options.refresh();}else this.refreshPending=true;}
   start(){
     if(!this.stopped)return;this.stopped=false;this.generation++;
     const wake=()=>{if(document.visibilityState==="hidden"){if(this.timer)clearTimeout(this.timer);this.timer=null;return;}if(navigator.onLine===false)this.patch({phase:"offline"});else{if(this.view.phase==="auth")this.patch({phase:"waiting"});this.schedule(100);}};
     const offline=()=>{if(this.timer)clearTimeout(this.timer);this.timer=null;if(!this.running)this.patch({phase:"offline",status:"Нет сети. Изменения сохранены на устройстве."});};
-    const unsubscribe=subscribeScoped(scope=>{if(scope===this.scope){this.refresh();if(this.view.phase!=="conflict"){this.patch({phase:navigator.onLine===false?"offline":"waiting"});this.schedule(1200);}}});
+    const unsubscribe=subscribeScoped(scope=>{if(scope===this.scope){if(this.view.phase!=="conflict" && !this.running){this.patch({phase:navigator.onLine===false?"offline":"waiting"});this.schedule(1200);}}});
     window.addEventListener("online",wake);window.addEventListener("offline",offline);window.addEventListener("focus",wake);document.addEventListener("visibilitychange",wake);
     this.events=new SyncEventsClient({onRevision:revision=>{
       if(this.stopped || this.seen.has(revision))return;this.seen.add(revision);while(this.seen.size>512)this.seen.delete(this.seen.values().next().value!);
@@ -59,8 +59,10 @@ export class ScopedSyncController {
     this.running=true;const generation=this.generation;
     if(this.timer)clearTimeout(this.timer);this.timer=null;
     const valid=()=>!this.stopped && generation===this.generation && this.options.canRun();
+    const finishBatch=beginScopedBatch(this.scope);
     try {
-      await withSyncLock(async lock=>{
+      const queued=(await readScopedIndex()).some(row=>row.scope===this.scope);
+      if(queued)await withSyncLock(async lock=>{
         for(let n=0;n<100 && valid() && lock();n++) {
           const index=(await readScopedIndex()).filter(row=>row.scope===this.scope).sort((a,b)=>a.sequence-b.sequence);
           const row=resolution?index.find(row=>row.target.id===resolution!.plan.target.id && row.target.kind===resolution!.plan.target.kind):index[0];
@@ -79,7 +81,7 @@ export class ScopedSyncController {
         this.failures=0;
         const remaining=(await readScopedIndex()).some(row=>row.scope===this.scope);
         this.patch({phase:remaining?"waiting":"synced",error:"",plan:null,lastSync:new Date().toISOString(),status:"Изменения идей синхронизированы."});
-        if(this.refreshPending)this.refresh();this.schedule(remaining?1200:this.healthy?600000:60000,!remaining);
+        if(this.refreshPending)this.refresh(true);this.schedule(remaining?1200:this.healthy?600000:60000,!remaining);
       }
     }catch(error){
       if(!this.stopped && generation===this.generation){
@@ -89,6 +91,6 @@ export class ScopedSyncController {
         this.patch({phase:auth?"auth":fatal?"error":error instanceof ScopedError && error.code==="STORAGE_ACCESS_DENIED"?"unavailable":"retry",error:error instanceof Error?error.message:"Не удалось выполнить облачный запрос."});
         if(!auth&&!fatal)this.schedule([2000,5000,10000,30000,60000,120000,300000][Math.min(this.failures++,6)]);
       }
-    }finally{this.running=false;if(!this.stopped && generation===this.generation)this.patch({busy:false});}
+    }finally{finishBatch();this.running=false;if(!this.stopped && generation===this.generation)this.patch({busy:false});}
   };
 }

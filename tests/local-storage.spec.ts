@@ -33,6 +33,8 @@ test("catalog pages read only requested metadata; opening an idea reads only its
   expect([...result.first.ideas, ...result.second.ideas, ...result.third.ideas].map(idea => idea.id)).toEqual(library.projects.map(idea => idea.id));
   expect(result.first.ideas.every((idea: IdeaSummary) => !Object.hasOwn(idea, "blocks"))).toBe(true);
   expect(result.firstReads.filter(r => r.store === "ideas")).toHaveLength(24);
+  expect(result.first.sections).toEqual(library.sections);
+  expect(result.first.counts).toEqual({s:61});
   expect(result.firstReads.some(r => r.store === "blocks" || r.store === "media")).toBe(false);
   expect(result.third.nextCursor).toBeNull();
   expect(result.detail.idea).toEqual(library.projects[29]);

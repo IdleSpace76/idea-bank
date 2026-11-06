@@ -181,7 +181,9 @@ export class CatalogStorage {
     if (cursor && cursor.revision !== root.revision) throw new StorageError(409, "STALE_CATALOG", "Список идей изменился. Загрузи его заново.");
     const offset = cursor?.offset ?? 0, ideas: CatalogCard[] = [];
     const filtered = !!(options.sectionId || query); let scanned = 0, matched = 0;
+    const knownTotal = query ? undefined : options.sectionId ? root.sectionCounts[options.sectionId] || 0 : root.count;
     for (const ref of root.pages) {
+      if (knownTotal === 0) break;
       if (!filtered && scanned + ref.count <= offset) { scanned += ref.count; matched += ref.count; continue; }
       const cards = await this.object<CatalogCard[]>(ref.key);
       for (const card of cards) {
@@ -189,9 +191,9 @@ export class CatalogStorage {
         if (matches) { if (matched >= offset && ideas.length < limit) ideas.push(card); matched++; }
       }
       scanned += ref.count;
-      if (!filtered && ideas.length === limit) break;
+      if (knownTotal !== undefined && ideas.length === limit) break;
     }
-    const total = filtered ? matched : root.count;
+    const total = knownTotal ?? matched;
     const nextCursor = offset + ideas.length < total ? Buffer.from(JSON.stringify({ revision: root.revision, offset: offset + ideas.length, ...(options.sectionId ? { sectionId: options.sectionId } : {}), query })).toString("base64url") : null;
     return { revision: root.revision, sections: root.sections, ideas, nextCursor, total, sectionCounts: root.sectionCounts, uninitialized: !root.heads.length };
   }

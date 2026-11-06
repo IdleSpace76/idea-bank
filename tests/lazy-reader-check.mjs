@@ -33,6 +33,7 @@ try {
     const context=await browser.newContext({viewport,isMobile:viewport.width<540,hasTouch:viewport.width<540});
     await context.addCookies([{name:cookie,value:token,url:origin,httpOnly:true,sameSite:"Lax"}]);
     await context.addInitScript(()=>localStorage.setItem("idea-bank.language","ru"));
+    await context.addInitScript(()=>{const native=indexedDB.open.bind(indexedDB);window.__databaseOpens=0;indexedDB.open=(name,version)=>{if(name==="idea-bank.local")window.__databaseOpens++;return native(name,version);};});
     const calls=[],batches=[],errors=[];let offline=false,denied=false,heldIdeaRead=null;
     await context.route("https://s3.eu-central-003.backblazeb2.com/**",async route=>{
       if(offline)return route.abort("failed");
@@ -82,6 +83,9 @@ try {
     assert.equal(calls.filter(call=>call.path==="/api/sync").length,0,"Browsing never downloads a full synchronization snapshot");
     assert.equal(calls.filter(call=>call.path.startsWith("/api/ideas/")).length,0,"Cards do not request document bodies");
     await delay(1200);
+    assert.equal(await page.evaluate(()=>window.__databaseOpens),1,"Initial cloud reading reuses one IndexedDB connection");
+    const sidebarCalls=()=>calls.filter(call=>call.path==="/api/catalog" && new URLSearchParams(call.query).get("sectionId")==="s" && new URLSearchParams(call.query).get("limit")==="4").length;
+    const initialSidebar=sidebarCalls();assert.equal(initialSidebar,1);
     const readCalls=()=>calls.filter(call=>call.path==="/api/catalog" || call.path.startsWith("/api/ideas/")).length;
     const beforeFocus=readCalls();
     await page.evaluate(()=>{for(let n=0;n<20;n++){window.dispatchEvent(new Event("focus"));document.dispatchEvent(new Event("visibilitychange"));}});
@@ -132,6 +136,7 @@ try {
     await expect(page.getByText("Офлайн · сохранённая версия",{exact:true})).toHaveCount(0);
     assert.equal(calls.filter(call=>call.path==="/api/sync").length,0);
     await home();
+    await delay(350);const beforeBrowsingSidebar=sidebarCalls();
     await page.locator(".projects-toolbar input").fill("distant");
     await expect(page.locator(".project-card > strong")).toHaveText("Idea 900");
     await page.locator(".projects-toolbar input").fill("");await page.locator(".section-open").click();
@@ -139,6 +144,8 @@ try {
     await page.evaluate(()=>window.scrollTo(0,document.documentElement.scrollHeight));
     await expect.poll(()=>page.locator(".project-card").count()).toBeGreaterThan(24);
     assert.ok(calls.some(call=>call.path==="/api/catalog" && call.query.includes("cursor=")));
+    await delay(350);
+    assert.equal(sidebarCalls(),beforeBrowsingSidebar,"Search, route changes and pagination do not reload an unchanged sidebar");
     // The compatibility write path must not interpret the remaining 976 ideas as deletions.
     await page.evaluate(()=>{location.hash="#/project/idea-0900";});await expect(page.getByRole("heading",{name:"Document 900",exact:true})).toBeVisible();
     await page.getByRole("button",{name:"Изменить",exact:true}).click();
@@ -191,6 +198,7 @@ try {
     await page.getByLabel("Заголовок блока",{exact:true}).last().fill(queuedHeading);
     await page.getByRole("button",{name:"Сохранить идею",exact:true}).click();
     await delay(1500);
+    await expect(page.getByText("Облако недоступно · сохранённая версия",{exact:true})).toBeVisible();
     const pausedCalls=calls.filter(call=>call.path==="/api/catalog" || call.path.startsWith("/api/ideas/") || call.path==="/api/sync/scoped").length;
     await page.evaluate(()=>{for(let n=0;n<10;n++){window.dispatchEvent(new Event("focus"));window.dispatchEvent(new Event("online"));}});
     await delay(1800);

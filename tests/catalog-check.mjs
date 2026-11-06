@@ -31,6 +31,13 @@ try {
   ordinaryReads();
   assert.equal(second.ideas[0].id,"idea-0024");
   assert.ok(calls.filter(call => call.name === "GetObjectCommand").length <= 3, "A page needs only root pointer, root, and one card page");
+  storageCache.clearStorageReadCache();reset();
+  const smallSection=await fixture.entities().catalog().readPage({sectionId:"s",limit:4});
+  assert.equal(smallSection.total,1000);assert.equal(smallSection.ideas.length,4);assert.ok(smallSection.nextCursor);
+  assert.equal(calls.filter(call=>call.name==="GetObjectCommand").length,3,"A four-card section reads one card page, not all 42 pages");
+  storageCache.clearStorageReadCache();reset();
+  assert.equal((await fixture.entities().catalog().readPage({sectionId:"absent",limit:4})).total,0);
+  assert.equal(calls.filter(call=>call.name==="GetObjectCommand").length,2,"An empty section does not load any card pages");
   let page = first; const ids = [];
   do { ids.push(...page.ideas.map(idea => idea.id)); if (!page.nextCursor) break; page = await fixture.entities().catalog().readPage({ cursor: page.nextCursor }); } while (true);
   assert.equal(ids.length,1000); assert.equal(new Set(ids).size,1000);

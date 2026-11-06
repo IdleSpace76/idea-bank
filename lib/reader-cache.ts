@@ -17,7 +17,7 @@ export async function readReaderCache<T>(scope: string, kind: Kind, id: string):
       const meta=tx.objectStore("meta");
       const entries = await request<Entry[] | undefined>(meta.get(indexKey)) || [];
       const entry = entries.find(entry => entry.key === key);
-      if (entry) { entry.used = Date.now(); meta.put(entries,indexKey); }
+      if (entry && Date.now()-entry.used>=30000) { entry.used = Date.now(); meta.put(entries,indexKey); }
     }).catch(()=>{});
   }
   return value;
@@ -53,11 +53,11 @@ export async function removeReaderCacheIn(tx:IDBTransaction,scope:string,kind:Ki
 /** A notification invalidates metadata only; closed document bodies are never read here. */
 export const markReaderStale=(scope:string)=>transaction(["meta"],"readwrite",async tx=>{
   const meta=tx.objectStore("meta"),entries=await request<Entry[]>(meta.get(indexKey)) || [];
-  for(const entry of entries)if(entry.scope===scope && entry.kind==="idea")entry.stale=true;
-  meta.put(entries,indexKey);
+  let changed=false;
+  for(const entry of entries)if(entry.scope===scope && entry.kind==="idea" && !entry.stale){entry.stale=true;changed=true;}
+  if(changed)meta.put(entries,indexKey);
 });
 export const markReaderFresh=(scope:string,id:string)=>transaction(["meta"],"readwrite",async tx=>{
   const meta=tx.objectStore("meta"),entries=await request<Entry[]>(meta.get(indexKey)) || [];
-  const entry=entries.find(entry=>entry.key===entryKey(scope,"idea",id));if(entry)entry.stale=false;
-  meta.put(entries,indexKey);
+  const entry=entries.find(entry=>entry.key===entryKey(scope,"idea",id));if(entry?.stale){entry.stale=false;meta.put(entries,indexKey);}
 });

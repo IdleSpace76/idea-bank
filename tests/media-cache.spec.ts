@@ -49,8 +49,13 @@ test("large lists render in batches and off-screen media are not read until open
   await expect(page.locator(".project-card")).toHaveCount(60);
   await page.locator(".project-card").filter({has:page.getByText("Idea 0",{exact:true})}).click();
   await expect(page.locator(".image-preview img").first()).toBeVisible();
+  const firstSource=await page.locator(".image-preview img").first().getAttribute("src");
+  const firstReads=await page.evaluate(()=>(window as any).mediaReads.filter((id:string)=>id==="image-0").length);
   expect(await page.evaluate(()=>(window as any).mediaReads)).not.toContain("image-19");
   await page.locator(".media-item").last().scrollIntoViewIfNeeded();
   await expect(page.locator(".media-item").last().locator(".image-preview img")).toBeVisible();
   expect(await page.evaluate(()=>(window as any).mediaReads)).toContain("image-19");
+  await page.locator(".media-item").first().scrollIntoViewIfNeeded();
+  await expect(page.locator(".media-item").first().locator(".image-preview img")).toHaveAttribute("src",firstSource!);
+  expect(await page.evaluate(()=>(window as any).mediaReads.filter((id:string)=>id==="image-0").length)).toBe(firstReads);
 });

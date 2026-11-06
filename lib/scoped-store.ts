@@ -6,13 +6,21 @@ import { cacheKey,pruneCacheIn,MEDIA_CACHE_LIMIT,type CacheState } from "./media
 import type { CloudMedia } from "./cloud-library";
 import { editCacheId,targetKey,type ScopedEntry,type ScopedOperation,type ScopedRead,type ScopedSummary,type SyncTarget } from "./scoped-types";
 const indexKey="scoped-queue-v1",channelName="idea-bank.scoped.changes";
+const activeBatches=new Map<string,number>();
+export const scopedBatchActive=(scope:string)=>!!activeBatches.get(scope);
+/** Keep local acknowledgements from making the reader re-display an older catalog mid-batch. */
+export function beginScopedBatch(scope:string) {
+  activeBatches.set(scope,(activeBatches.get(scope)||0)+1);
+  return ()=>{const count=(activeBatches.get(scope)||1)-1;if(count)activeBatches.set(scope,count);else activeBatches.delete(scope);};
+}
 type Deletion={scope:string;kind:"idea"|"section";id:string;counter:number};
 export const readScopedDeletions=():Promise<Deletion[]>=>transaction(["meta"],"readonly",async tx=>await request(tx.objectStore("meta").get("scoped-deletions")) || []);
 export const scopedReadCounter=():Promise<number>=>transaction(["meta"],"readonly",async tx=>await request(tx.objectStore("meta").get("scoped-confirmed-counter")) || 0);
 export async function observeScopedAlive(scope:string,ideas:string[],sections:string[],started:number) {
   await transaction(["meta"],"readwrite",async tx=>{
     const meta=tx.objectStore("meta"),rows=await request<Deletion[]>(meta.get("scoped-deletions")) || [];
-    meta.put(rows.filter(row=>row.scope!==scope || row.counter>started || !(row.kind==="idea"?ideas:sections).includes(row.id)),"scoped-deletions");
+    const next=rows.filter(row=>row.scope!==scope || row.counter>started || !(row.kind==="idea"?ideas:sections).includes(row.id));
+    if(next.length!==rows.length)meta.put(next,"scoped-deletions");
   });
 }
 export async function noteScopedDeletion(scope:string,id:string) {
@@ -27,9 +35,9 @@ export function notifyScoped(scope:string) {
   try{const channel=new BroadcastChannel(channelName);channel.postMessage(scope);channel.close();}catch{}
   window.dispatchEvent(new CustomEvent(channelName,{detail:scope}));
 }
-export function subscribeScoped(listener:(scope:string)=>void) {
+export function subscribeScoped(listener:(scope:string,external?:boolean)=>void) {
   let channel:BroadcastChannel|null=null;
-  try{channel=new BroadcastChannel(channelName);channel.onmessage=event=>{if(typeof event.data==="string")listener(event.data);};}catch{}
+  try{channel=new BroadcastChannel(channelName);channel.onmessage=event=>{if(typeof event.data==="string")listener(event.data,true);};}catch{}
   const receive=(event:Event)=>{const value=(event as CustomEvent).detail;if(typeof value==="string")listener(value);};
   window.addEventListener(channelName,receive);return()=>{channel?.close();window.removeEventListener(channelName,receive);};
 }

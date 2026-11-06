@@ -3,19 +3,20 @@ import { translate as t } from "./i18n";
 import { useEffect, useState, type RefObject } from "react";
 import { getMediaFile } from "./media-cache";
 import { useMediaScope } from "../components/media-scope";
+import { retryCloudAccess } from "./cloud-access";
 
-/** Off-screen previews do not read blobs or start cloud requests. */
+/** Load at first visibility, then keep the source until the file changes or the preview unmounts. */
 export function useMediaSource(id?: string, file?: Blob, target?: RefObject<HTMLElement | null>) {
   const scope = useMediaScope();
   const [source,setSource] = useState(""), [error,setError] = useState("");
   const [visible,setVisible] = useState(!target), [attempt,setAttempt] = useState(0);
-  const retry=()=>setAttempt(value=>value+1);
+  const retry=()=>{if(scope)retryCloudAccess();setAttempt(value=>value+1);};
   useEffect(()=>{
     if(!target?.current || typeof IntersectionObserver==="undefined"){setVisible(true);return;}
-    const observer=new IntersectionObserver(entries=>setVisible(entries.some(entry=>entry.isIntersecting)),{rootMargin:"200px"});
+    const observer=new IntersectionObserver(entries=>{if(entries.some(entry=>entry.isIntersecting)){setVisible(true);observer.disconnect();}},{rootMargin:"200px"});
     observer.observe(target.current);return()=>observer.disconnect();
   },[target]);
-  useEffect(()=>{if(!error)return;window.addEventListener("online",retry);return()=>window.removeEventListener("online",retry);},[error]);
+  useEffect(()=>{if(!error)return;const online=()=>setAttempt(value=>value+1);window.addEventListener("online",online);return()=>window.removeEventListener("online",online);},[error]);
   useEffect(()=>{
     let cancelled=false,url="";
     setSource("");setError("");
