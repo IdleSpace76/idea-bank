@@ -34,7 +34,7 @@ try {
     await context.addCookies([{name:cookie,value:token,url:origin,httpOnly:true,sameSite:"Lax"}]);
     await context.addInitScript(()=>localStorage.setItem("idea-bank.language","ru"));
     await context.addInitScript(()=>{const native=indexedDB.open.bind(indexedDB);window.__databaseOpens=0;indexedDB.open=(name,version)=>{if(name==="idea-bank.local")window.__databaseOpens++;return native(name,version);};});
-    const calls=[],batches=[],errors=[];let offline=false,denied=false,heldIdeaRead=null,heldCatalogRead=null;
+    const calls=[],batches=[],errors=[];let offline=false,denied=false,heldIdeaRead=null,heldCatalogRead=null,heldScopedWrite=null;
     await context.route("https://s3.eu-central-003.backblazeb2.com/**",async route=>{
       if(offline)return route.abort("failed");
       const request=route.request(),key=decodeURIComponent(new URL(request.url()).pathname).replace(/^\/fixture-bucket\//,""),headers={"Access-Control-Allow-Origin":"*","Access-Control-Allow-Methods":"GET,PUT,OPTIONS","Access-Control-Allow-Headers":"content-type,content-md5,x-amz-meta-sha256"};
@@ -56,6 +56,7 @@ try {
         if(url.pathname==="/api/sync/scoped") {
           const body=request.postDataJSON();
           if(request.method()==="POST")return reply(await fixture.entities().readScoped(body.target,body.includeIdeas,body.includeMedia));
+          if(heldScopedWrite)await heldScopedWrite;
           batches.push(body);return reply(await fixture.entities().save(body));
         }
         if(url.pathname==="/api/catalog"){if(heldCatalogRead)await heldCatalogRead;return reply(await fixture.entities().catalog().readPage({limit:Number(url.searchParams.get("limit")||24),cursor:url.searchParams.get("cursor")||undefined,query:url.searchParams.get("q")||undefined,sectionId:url.searchParams.get("sectionId")||undefined}));}
@@ -178,6 +179,15 @@ try {
     assert.ok(batches.every(batch=>batch.changes.every(change=>change.value!==null)),"A partial view cannot delete unloaded cloud records");
     assert.equal(calls.filter(call=>call.path==="/api/sync").length,0,"Editing also avoids full-library synchronization");
     await home();
+    await expect(page.locator(".local-status")).toHaveAttribute("data-sync-phase","synced");
+    await delay(500);
+    const beforeCreateDialogs=calls.length;
+    for(const open of [()=>page.getByRole("button",{name:"Создать раздел",exact:true}).last().click(),()=>page.locator(".page-action-button").click()]) {
+      await open();await expect(page.getByRole("dialog")).toBeVisible();
+      await page.getByRole("dialog").getByRole("button",{name:"Отмена",exact:true}).click();
+    }
+    await delay(500);
+    assert.equal(calls.length,beforeCreateDialogs,"Opening and cancelling creation dialogs makes no API requests");
     await page.getByRole("button",{name:"Создать раздел",exact:true}).last().click();
     await page.getByRole("dialog").getByLabel("Название",{exact:true}).fill(`Temporary ${viewport.width}`);
     await page.getByRole("dialog").getByRole("button",{name:"Создать раздел",exact:true}).click();
@@ -187,8 +197,17 @@ try {
     await page.getByRole("dialog").getByLabel("Название",{exact:true}).fill("Temporary idea");
     const cover=await page.evaluate(()=>{const canvas=document.createElement("canvas");canvas.width=8;canvas.height=8;canvas.getContext("2d").fillRect(0,0,8,8);return canvas.toDataURL().split(",")[1];});
     await page.getByRole("dialog").getByLabel("Загрузить свою обложку",{exact:true}).setInputFiles({name:"new-cover.png",mimeType:"image/png",buffer:Buffer.from(cover,"base64")});
+    let releaseWrite;heldScopedWrite=new Promise(resolve=>{releaseWrite=resolve;});
     await page.getByRole("dialog").getByRole("button",{name:"Создать идею",exact:true}).click();
     await expect(page.getByRole("heading",{name:"Temporary idea",exact:true})).toBeVisible();
+    try {
+      await expect(page.locator(".sidebar .nav-item").filter({hasText:`Temporary ${viewport.width}`}).locator("small")).toHaveText("1");
+      await home();
+      await expect(page.locator(".section-open").filter({hasText:`Temporary ${viewport.width}`})).toContainText("Идей: 1");
+      assert.equal((await fixture.entities().catalog().readPage()).total,1000,"Counts update before the cloud write completes");
+    } finally {heldScopedWrite=null;releaseWrite();}
+    await page.locator(".section-open").filter({hasText:`Temporary ${viewport.width}`}).click();
+    await page.locator(".project-card").filter({hasText:"Temporary idea"}).click();
     const temporary=decodeURIComponent(new URL(page.url()).hash.split("/").pop());
     await expect.poll(async()=>{try{return (await fixture.entities().catalog().readIdea(temporary)).idea.name;}catch{return "";}},{timeout:15000}).toBe("Temporary idea");
     await expect(page.locator(".local-status")).toHaveAttribute("data-sync-phase","synced");

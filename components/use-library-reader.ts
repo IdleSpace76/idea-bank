@@ -35,6 +35,7 @@ export function useLibraryReader(scope: string | undefined, enabled: boolean, ro
     if(scope && !needsCloud.current)invalidating.current=invalidating.current.catch(()=>{}).then(()=>markReaderStale(scope)).catch(()=>{});
     scheduleRefresh(true);
   },[scope,scheduleRefresh]);
+  const refreshLocal=useCallback(()=>scheduleRefresh(false),[scheduleRefresh]);
   useEffect(()=>()=>{if(refreshTimer.current!==null){clearTimeout(refreshTimer.current);refreshTimer.current=null;}needsCloud.current=false;},[scope]);
   const sectionId = route.screen === "section" ? route.id : undefined;
   const ideaId = route.screen === "project" ? route.id : undefined;
@@ -192,5 +193,5 @@ export function useLibraryReader(scope: string | undefined, enabled: boolean, ro
   },[main,sidebar,search,detail,ideaId,scope]);
   const counts=main.page?.counts || (navigation.current.scope===scope?navigation.current.counts:{});
   const cloudError=main.cloudError || main.page?.cloudError || (detail.id===ideaId?detail.cloudError:undefined);
-  return {library,main,sidebar,search,counts,detail:detail.id===ideaId?detail:null,cloudError,migrationRequired:main.migration,authRequired:main.auth || detail.id===ideaId && detail.auth,online,offline:!!scope && (!online || !!main.page?.offline || !!(ideaId && detail.offline)),refresh,loadMore,expandSection,moreSearch};
+  return {library,main,sidebar,search,counts,detail:detail.id===ideaId?detail:null,cloudError,migrationRequired:main.migration,authRequired:main.auth || detail.id===ideaId && detail.auth,online,offline:!!scope && (!online || !!main.page?.offline || !!(ideaId && detail.offline)),refresh,refreshLocal,loadMore,expandSection,moreSearch};
 }

@@ -90,7 +90,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
   const returnBlock = useRef<string | null>(null);
   const loadMoreTarget = useRef<HTMLDivElement>(null);
 
-  const readerLocked=!!draft || !!draftReview || saving || importingMedia || backupBusy || (!!modal && modal.type!=="storage-info");
+  const readerLocked=!!draft || !!draftReview || saving || importingMedia || backupBusy || (!!modal && !["storage-info","new-section","new-project"].includes(modal.type));
   const reader=useLibraryReader(legacySession?undefined:cloudScope,ready,route,query,sidebarQuery,readerLocked);
   const readerRef=useRef(reader);readerRef.current=reader;
   const preparedId=route.screen==="project" ? route.id : modal && "project" in modal ? modal.project.id : undefined;
@@ -270,10 +270,14 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
     try{await prepareEdit(target);reader.refresh();}catch(error){setStorageError(error instanceof Error?error.message:String(error));}
   }
   async function openModal(next: Modal) {
+    if(next.type==="new-section" || next.type==="new-project") {
+      if(draft || savingRef.current || bridgeRef.current) {setStorageError(t("Сначала сохрани или отмени редактирование и дождись завершения других операций."));return;}
+      setModal(next);return;
+    }
     if(next.type==="storage-info" && cloudScope&&!legacySession){setModal(next);return;}
     if(next.type==="storage-info" && (draft || readOnly || savingRef.current || importingRef.current)) {setModal(next);return;}
     try {
-      const target:SyncTarget=next.type==="new-project"?{kind:"idea",id:createId()}:next.type==="new-section"?{kind:"section",id:createId()}:"project" in next?{kind:"idea",id:next.project.id}:"section" in next?{kind:next.type==="delete-section"?"section-tree":"section",id:next.section.id}:{kind:"section",id:"unused"};
+      const target:SyncTarget="project" in next?{kind:"idea",id:next.project.id}:"section" in next?{kind:next.type==="delete-section"?"section-tree":"section",id:next.section.id}:{kind:"section",id:"unused"};
       const full=next.type==="storage-info"?await prepareFull(true):await prepareEdit(target);
       if("project" in next) {
         const project=full.projects.find(idea=>idea.id===next.project.id);
@@ -287,6 +291,12 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
     } catch(reason) {setStorageError(reason instanceof Error?reason.message:String(reason));}
   }
 
+  /** Creation dialogs need no edit snapshot until the user actually submits them. */
+  async function prepareCreation(target:SyncTarget) {
+    try {await prepareEdit(target);return true;}
+    catch(reason){setStorageError(reason instanceof Error?reason.message:String(reason));return false;}
+  }
+
   /** Publishes UI success only after the library and pending changes commit together. */
   async function commit(next: Library, notice: string) {
     if (readOnly || savingRef.current) return false;
@@ -296,10 +306,10 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
       const complete=applyVisibleEdit(base,library,next);
       if(cloudScope && !legacySession && preparedEntry.current) {
         preparedEntry.current=await queuePrepared(preparedEntry.current,complete);
-        setFullLibrary(complete);fullRef.current=complete;reader.refresh();setStorageError("");setMessage(notice);return true;
+        setFullLibrary(complete);fullRef.current=complete;reader.refreshLocal();setStorageError("");setMessage(notice);return true;
       }
       await saveLocalLibrary(complete, base);
-      setFullLibrary(complete);fullRef.current=complete;reader.refresh();setStorageError(""); setMessage(notice);
+      setFullLibrary(complete);fullRef.current=complete;reader.refreshLocal();setStorageError(""); setMessage(notice);
       const kept = new Set(complete.projects.flatMap(projectMediaIds));
       const removed = base.projects.flatMap(projectMediaIds).filter(id => !kept.has(id));
       void removeMediaFiles(removed).catch(() => {});
@@ -523,10 +533,12 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
 
     {modal && <Dialog title={modalTitle(modal)} closeDisabled={backupBusy} onClose={() => { if (!savingRef.current) setModal(null); }}>
       {modal.type === "new-section" || modal.type === "edit-section" ? <SectionForm section={modal.type === "edit-section" ? modal.section : undefined} onCancel={() => setModal(null)} onSave={async values => {
-        const section: Section = modal.type === "edit-section" ? { ...modal.section, ...values } : { id: preparedEntry.current?.target.kind === "section" ? preparedEntry.current.target.id : createId(), ...values };
+        const section: Section = modal.type === "edit-section" ? { ...modal.section, ...values } : { id: createId(), ...values };
+        if(modal.type==="new-section" && !await prepareCreation({kind:"section",id:section.id}))return false;
         const success = await commit({ ...library, sections: modal.type === "edit-section" ? library.sections.map(s => s.id === section.id ? section : s) : [...library.sections, section] }, modal.type === "edit-section" ? t("Раздел обновлён.") : t("Раздел создан.")); if (success) setModal(null); return success;
       }} /> : modal.type === "new-project" || modal.type === "edit-project" ? <ProjectForm sections={library.sections} initialSectionId={modal.type === "new-project" ? modal.sectionId : modal.project.sectionId} project={modal.type === "edit-project" ? modal.project : undefined} onCancel={() => setModal(null)} onSave={async (values, coverFile) => {
-        const project: Project = modal.type === "edit-project" ? { ...modal.project, ...values, updatedAt: new Date().toISOString() } : { id: preparedEntry.current?.target.kind === "idea" ? preparedEntry.current.target.id : createId(), ...values, blocks: [], updatedAt: new Date().toISOString() };
+        const project: Project = modal.type === "edit-project" ? { ...modal.project, ...values, updatedAt: new Date().toISOString() } : { id: createId(), ...values, blocks: [], updatedAt: new Date().toISOString() };
+        if(modal.type==="new-project" && !await prepareCreation({kind:"idea",id:project.id}))return false;
         savingRef.current = true;
         try {
         if (coverFile && project.coverImage) await saveMediaFiles(new Map([[project.coverImage.id, coverFile]]));
