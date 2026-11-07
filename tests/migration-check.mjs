@@ -26,7 +26,7 @@ try {
   browser=await chromium.launch({channel:"msedge",headless:true});
   const cookie="authjs.session-token",token=await encode({secret,salt:cookie,token:{sub:"12345",name:"Migration fixture"},maxAge:1800});
   async function device(fixture,viewport,local){
-    const context=await browser.newContext({viewport,isMobile:viewport.width<540,hasTouch:viewport.width<540}),calls=[],network={failFull:false,hold:null,entered:null};
+    const context=await browser.newContext({viewport,isMobile:viewport.width<540,hasTouch:viewport.width<540}),calls=[],network={failFull:false,hold:null,entered:null,holdWrite:null,enteredWrite:null};
     await context.addCookies([{name:cookie,value:token,url:origin,httpOnly:true,sameSite:"Lax"}]);
     await context.addInitScript(({local})=>{localStorage.setItem("idea-bank.language","ru");if(local&&!localStorage.getItem("migration-fixture-seeded")){localStorage.setItem("idea-bank.library.v1",JSON.stringify(local));localStorage.setItem("migration-fixture-seeded","yes");}},{local});
     await context.route("**/api/**",async route=>{
@@ -45,6 +45,7 @@ try {
             if(network.failFull)return reply({error:{message:"Full download unavailable"}},503);
             if(network.hold){network.entered?.();await network.hold;network.hold=null;}
           }
+          if(method==="PUT" && network.holdWrite){network.enteredWrite?.();await network.holdWrite;network.holdWrite=null;}
           return reply(method==="POST"?await entities.readScoped(body.target,body.includeIdeas,body.includeMedia):await entities.saveScoped(body));
         }
         if(url.pathname==="/api/sync"){
@@ -144,6 +145,39 @@ try {
     await page.reload();await expect(page.locator(".project-card")).toHaveCount(0);
     page.off("request",trackReset);
     assert.ok(!resetRequests.some(path=>path.startsWith("/examples/") || path.includes("/media/") || path.includes("/sync/media")),"Confirmed reset never prepares Example or downloads media originals");
+    // A retained replica is not the cloud import's baseline and must never be replaced by it.
+    await expect.poll(async()=>(await old.entities().catalog().readPage()).total).toBe(0);
+    await page.evaluate(async({seed,scope})=>{const store=await import("/__local_fixture__/library-store.js");await store.saveLocalLibrary(seed,null,{remote:true,checkpoint:{version:2,scope:scope+"-old-copy",index:{},values:{},files:[],syncedAt:new Date().toISOString()}});},{seed,scope});
+    await open(page);await page.getByRole("button",{name:"Загрузить Example",exact:true}).click();await expect(page.locator(".backup-import-summary")).toContainText("Новых идей: 1.");
+    // A real unacknowledged local write still blocks import, including all staged media.
+    const mediaKeys=()=>page.evaluate(async()=>{const {transaction,request}=await import("/__local_fixture__/local-database.js");return transaction(["media"],"readonly",tx=>request(tx.objectStore("media").getAllKeys()));});
+    const oldMedia=await mediaKeys(),beforeRefusal=calls.length;
+    await page.evaluate(async()=>{const {transaction}=await import("/__local_fixture__/local-database.js");await transaction(["outbox"],"readwrite",async tx=>{tx.objectStore("outbox").put({id:"unacknowledged-fixture"},"unacknowledged-fixture");});});
+    await page.getByRole("button",{name:"Импортировать идеи",exact:true}).click();
+    await expect(page.locator(".backup-controls:not(.cloud-sync-controls) .backup-error")).toHaveText("Сначала завершите синхронизацию и разрешите конфликты.");
+    assert.equal(calls.length,beforeRefusal,"A guarded import makes no cloud request");assert.deepEqual(await mediaKeys(),oldMedia,"A rejected import stages no file blobs");
+    assert.deepEqual(await page.evaluate(async()=>{const {readScopedIndex}=await import("/__local_fixture__/scoped-store.js");return readScopedIndex();}),[]);
+    await page.evaluate(async()=>{const {transaction}=await import("/__local_fixture__/local-database.js");await transaction(["outbox"],"readwrite",async tx=>{tx.objectStore("outbox").delete("unacknowledged-fixture");});});
+    let releaseImport,enteredImport;network.holdWrite=new Promise(resolve=>releaseImport=resolve);const writing=new Promise(resolve=>enteredImport=resolve);network.enteredWrite=enteredImport;
+    await page.getByRole("button",{name:"Импортировать идеи",exact:true}).click();await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.locator(".project-card > strong")).toHaveText("Example");
+    await Promise.race([writing,delay(20000).then(()=>{throw new Error("Example upload did not start");})]);
+    assert.equal((await old.entities().catalog().readPage()).total,0,"The card appears before cloud acknowledgement");
+    const queued=await page.evaluate(async scope=>{const {readScopedEntry}=await import("/__local_fixture__/scoped-store.js"),{assembleLibrary}=await import("/__local_fixture__/entity-sync.js"),{readMediaFile}=await import("/__local_fixture__/media-store.js");const entry=await readScopedEntry(scope,{kind:"library",id:"all"}),library=assembleLibrary(entry.local),assets=library.projects.flatMap(idea=>idea.blocks.flatMap(block=>block.media || []));return {ideas:library.projects.length,files:await Promise.all(assets.map(async asset=>({size:(await readMediaFile(asset.id))?.size,expected:asset.size}))) };},scope);
+    assert.equal(queued.ideas,1);assert.equal(queued.files.length,2);for(const file of queued.files)assert.equal(file.size,file.expected,"Queue and original file blobs are committed together");
+    await page.locator(viewport.width<540?".recent-project-item > button:not(.icon-button)":".project-card").click();await expect(page.locator(".content-block")).toHaveCount(2);assert.equal((await old.entities().catalog().readPage()).total,0,"Imported content is readable while its write is pending");const beforeAck=calls.length;releaseImport();
+    await expect.poll(async()=>(await old.entities().catalog().readPage()).total).toBe(1);await phase(page,"synced");
+    assert.ok(!calls.slice(beforeAck).some(call=>call.path==="/api/reader/batch"),"Acknowledgement must not re-download the imported body or media");
+    assert.deepEqual(await page.evaluate(async()=>{const store=await import("/__local_fixture__/library-store.js");return store.readLocalLibrary();}),seed,"Cloud import preserves a retained local copy");
+    const example=(await old.entities().catalog().readIdea("example")).idea;assert.equal(example.name,"Example");assert.equal(example.blocks.flatMap(block=>block.media || []).length,2);
+    assert.ok(!(await state(page)).pending.length,"Cloud Example import does not create a compatibility outbox");
+    const bodyCalls=calls.length;
+    const cachedExample=await page.evaluate(async scope=>{const {loadReaderIdea}=await import("/__local_fixture__/library-reader.js");return loadReaderIdea(scope,"example",undefined,true);},scope);
+    assert.equal(cachedExample.idea.blocks.length,2);assert.equal(cachedExample.editBase.target.kind,"idea");assert.equal(calls.length,bodyCalls,"Acknowledged imports retain a bounded body cache without another request");
+    const writesBeforeRepeat=calls.filter(call=>call.method==="PUT").length;
+    await open(page);await page.getByRole("button",{name:"Загрузить Example",exact:true}).click();await expect(page.locator(".backup-import-summary")).toContainText("Новых идей: 0. Уже есть: 1. Отличаются: 0.");
+    await page.getByRole("button",{name:"Импортировать идеи",exact:true}).click();await expect(page.getByRole("dialog")).toHaveCount(0);
+    assert.equal(calls.filter(call=>call.method==="PUT").length,writesBeforeRepeat,"An identical Example import creates no write or duplicate");
     await context.close();
 
     // Reset includes unloaded ideas and needs no original file or generated Example media.
@@ -189,6 +223,6 @@ try {
     const read=await modern.entities().read();await modern.entities().save({operationId:randomUUID(),heads:read.heads,changes:Object.keys(read.index).map(key=>({key,value:null,base:read.index[key]}))});
     const fresh=await device(modern,viewport);await expect(fresh.page.locator(".library-loading")).toHaveCount(0);await phase(fresh.page,"synced");
     assert.equal(fresh.calls.filter(call=>call.method==="PUT").length,0);assert.equal((await state(fresh.page)).layout,undefined);await fresh.context.close();
-    console.log(`Migration checks passed at ${viewport.width}px: explicit legacy transition, owner choice, bounded replica retirement, reload, complete ZIP, reset and intentionally empty cloud.`);
+    console.log(`Migration checks passed at ${viewport.width}px: explicit legacy transition, owner choice, ZIP, cloud Example import with retained local data, atomic media, pending reads, guarded writes, reset and empty cloud.`);
   }
 }finally{if(browser)await browser.close();for(const fixture of fixtures)fixture.storage.client.destroy();server.kill("SIGKILL");await new Promise(resolve=>{if(server.exitCode!==null)resolve();else server.once("exit",resolve);});}

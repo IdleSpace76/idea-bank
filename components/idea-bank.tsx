@@ -18,7 +18,6 @@ import { prepareTarget,queuePrepared,readTarget,type ScopedPlan } from "@/lib/sc
 import { readScopedIndex } from "@/lib/scoped-store";
 import type { ScopedEntry,SyncTarget } from "@/lib/scoped-types";
 import { assembleLibrary,entityKey,flattenLibrary,validateRead } from "@/lib/entity-sync";
-import {parseCloudMedia} from "@/lib/cloud-library";
 import type {BackupSource} from "@/lib/library-backup";
 import {retryCloudAccess} from "@/lib/cloud-access";
 import { useLibraryReader } from "./use-library-reader";
@@ -220,7 +219,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
     void retireCloudReplica(cloudScope).catch(()=>{/* Cleanup is optional; a failed transaction keeps the old replica intact. */});
   },[cloudScope,legacySession,readerLocked,reader.main.source,reader.main.page,reader.main.loading,reader.main.error]);
 
-  /** Full materialization is reserved for legacy migration and ZIP operations. */
+  /** Full materialization is reserved for legacy migration and compatibility operations. */
   async function prepareFull(allowReview=false,ownedBackup=false): Promise<Library> {
     if(draft || savingRef.current&&!ownedBackup || bridgeRef.current)throw new Error(t("Сначала сохрани или отмени редактирование и дождись завершения других операций."));
     bridgeRef.current=true;savingRef.current=true;setSaving(true);
@@ -461,8 +460,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
       if((await readScopedIndex()).some(row=>row.scope===cloudScope))throw new Error(t("Сначала завершите синхронизацию и разрешите конфликты."));
       const read=await readTarget({kind:"library",id:"all"}),parsed=validateRead(read,{},{});
       if(Object.values(parsed.variants).some(values=>values.length!==1))throw new Error(t("Сначала завершите синхронизацию и разрешите конфликты."));
-      const files=Object.values(parsed.remote).filter(value=>!!value && "sha256" in value).map(parseCloudMedia);
-      return {library:assembleLibrary(parsed.remote),checkpoint:{version:2,scope:cloudScope,index:read.index,values:parsed.remote,recovery:parsed.recovery,files,syncedAt:new Date().toISOString()}};
+      return {library:assembleLibrary(parsed.remote),cloud:{scope:cloudScope,read}};
     }finally{bridgeRef.current=false;}
   }
 

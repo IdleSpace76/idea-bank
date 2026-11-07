@@ -14,7 +14,7 @@ export async function overlayPage(scope:string,page:ReaderPage,options:ReaderQue
     }
   }
   const matches=(idea:IdeaSummary|null|undefined)=>!!idea && (!options.sectionId || idea.sectionId===options.sectionId) && (!options.query?.trim() || `${idea.name}\n${idea.description}`.toLowerCase().includes(options.query.trim().toLowerCase()));
-  const rows=pending.flatMap(row=>row.target.kind==="library" ? (row.deletedSections || []).map(id=>({...row,target:{kind:"section-tree" as const,id},section:null})) : [row]);
+  const rows=pending.flatMap(row=>row.target.kind==="library" ? row.entries || (row.deletedSections || []).map(id=>({...row,target:{kind:"section-tree" as const,id},section:null})) : [row]);
   for(const row of rows) {
     if(row.target.kind!=="idea") {
       if(row.section)sections.set(row.section.id,row.section);
@@ -35,12 +35,12 @@ export async function overlayPage(scope:string,page:ReaderPage,options:ReaderQue
     ideas.delete(row.target.id);
     if(row.idea && matches(row.idea))ideas.set(row.idea.id,row.idea);
   }
-  return {...page,...(pending.some(row=>row.target.kind==="library")?{nextCursor:null}:{}),sections:[...sections.values()],ideas:[...ideas.values()].sort((a,b)=>Date.parse(b.updatedAt)-Date.parse(a.updatedAt)||a.id.localeCompare(b.id)),counts,total:Math.max(ideas.size,total)};
+  return {...page,...(pending.some(row=>row.target.kind==="library" && row.reset!==false)?{nextCursor:null}:{}),sections:[...sections.values()],ideas:[...ideas.values()].sort((a,b)=>Date.parse(b.updatedAt)-Date.parse(a.updatedAt)||a.id.localeCompare(b.id)),counts,total:Math.max(ideas.size,total)};
 }
 export async function overlayIdea(scope:string,id:string) {
   const entries=(await readScopedIndex()).filter(row=>row.scope===scope);
   if(entries.some(row=>row.deletedIds.includes(id) || row.target.kind==="idea" && row.target.id===id && row.idea===null))return {deleted:true as const};
-  const own=entries.find(row=>row.target.kind==="idea" && row.target.id===id);
+  const own=entries.find(row=>row.target.kind==="idea" && row.target.id===id || row.target.kind==="library" && row.entries?.some(child=>child.target.kind==="idea" && child.target.id===id));
   if(!own) {
     const deleted=(await readScopedDeletions()).some(row=>row.scope===scope && row.kind==="idea" && row.id===id);
     return deleted?{deleted:true as const,confirmed:true}:undefined;

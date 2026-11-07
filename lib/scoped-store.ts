@@ -1,5 +1,5 @@
 import { request,transaction } from "./local-database";
-import { equal,entityKey,mergeValue,type EntityMap } from "./entity-sync";
+import { equal,entityKey,keyParts,mergeValue,type EntityMap } from "./entity-sync";
 import { summarizeIdea,type IdeaSummary,type Project,type Section } from "./ideas";
 import { removeReaderCacheIn,writeReaderCacheIn,settleReaderPagesIn,advanceReaderEpochIn } from "./reader-cache";
 import { cacheKey,pruneCacheIn,MEDIA_CACHE_LIMIT,type CacheState } from "./media-cache-store";
@@ -50,24 +50,39 @@ export function subscribeScoped(listener:(scope:string,external?:boolean)=>void)
 export const readScopedIndex=():Promise<ScopedSummary[]>=>transaction(["meta"],"readonly",async tx=>await request(tx.objectStore("meta").get(indexKey)) || []);
 export const readScopedEntry=(scope:string,target:SyncTarget):Promise<ScopedEntry|undefined>=>transaction(["meta"],"readonly",tx=>request(tx.objectStore("meta").get(targetKey(scope,target))));
 function summary(entry:ScopedEntry):ScopedSummary {
-  const key=entityKey(entry.target.kind==="idea"?"idea":"section",entry.target.id);
-  const before=entry.base.records.find(record=>record.key===key)?.value;
-  return {key:targetKey(entry.scope,entry.target),scope:entry.scope,target:entry.target,sequence:entry.sequence,
-    ...(entry.target.kind==="library"?{deletedSections:Object.entries(entry.local).filter(([key,value])=>key.startsWith("section:") && !value).map(([key])=>JSON.parse(key.slice(8))[0])}:entry.target.kind==="idea"?{before:before?summarizeIdea(before as IdeaSummary):null,idea:entry.local[key]?summarizeIdea(entry.local[key] as IdeaSummary):null}:{section:entry.local[key] as Section|null}),
-    deletedIds:Object.entries(entry.local).filter(([key,value])=>key.startsWith("idea:") && !value).map(([key])=>JSON.parse(key.slice(5))[0])};
+  const before=new Map(entry.base.records.map(record=>[record.key,record.value]));
+  const project=(target:SyncTarget):ScopedSummary=>{
+    const key=entityKey(target.kind==="idea"?"idea":"section",target.id),old=before.get(key);
+    return {key:targetKey(entry.scope,target),scope:entry.scope,target,sequence:entry.sequence,deletedIds:[],...(target.kind==="idea"?{before:old?summarizeIdea(old as IdeaSummary):null,idea:entry.local[key]?summarizeIdea(entry.local[key] as IdeaSummary):null}:target.kind!=="library"?{section:entry.local[key] as Section|null}:{})};
+  };
+  const result=project(entry.target);
+  result.deletedIds=Object.entries(entry.local).filter(([key,value])=>key.startsWith("idea:") && !value).map(([key])=>keyParts(key).ids[0]);
+  if(entry.target.kind==="library"){
+    const touched=new Set<string>();
+    for(const [key,value] of Object.entries(entry.local))if(!equal(value,before.get(key) || null)){
+      const part=keyParts(key);if(part.kind==="idea" || part.kind==="section")touched.add(key);else if(part.kind==="block")touched.add(entityKey("idea",part.ids[0]));
+    }
+    result.deletedSections=Object.entries(entry.local).filter(([key,value])=>key.startsWith("section:") && !value).map(([key])=>keyParts(key).ids[0]);
+    result.reset=!Object.entries(entry.local).some(([key,value])=>key.startsWith("section:") && value);
+    result.entries=[...touched].sort().map(key=>{const part=keyParts(key);return project({kind:part.kind as "idea"|"section",id:part.ids[0]});});
+  }
+  return result;
 }
-export async function queueScoped(scope:string,target:SyncTarget,base:ScopedRead,local:EntityMap,expectedSequence:number,creationParent?:Section) {
-  const entry=await transaction(["meta"],"readwrite",async tx=>{
+export async function queueScoped(scope:string,target:SyncTarget,base:ScopedRead,local:EntityMap,expectedSequence:number,creationParent?:Section,files?:ReadonlyMap<string,Blob>) {
+  const entry=await transaction(["meta",...(target.kind==="library"?["outbox"]:[]),...(files?.size?["media"]:[])],"readwrite",async tx=>{
     const meta=tx.objectStore("meta"),key=targetKey(scope,target),previous=await request<ScopedEntry|undefined>(meta.get(key));
     if((previous?.sequence || 0)!==expectedSequence)throw new Error("Библиотека изменилась в другой вкладке. Сохранение остановлено, чтобы не потерять изменения.");
+    if(target.kind==="library" && (await request(tx.objectStore("outbox").count()) || await request(meta.get("sync-operation"))))throw new Error("Сначала завершите синхронизацию и разрешите конфликты.");
     const index=await request<ScopedSummary[]>(meta.get(indexKey)) || [];
     for(const other of index.filter(row=>row.scope===scope && row.key!==key)) {
       const idea=local[entityKey("idea",target.id)] as {sectionId:string}|null;
       if(target.kind==="library" || other.target.kind==="library" && (other.deletedIds.includes(target.id) || (other.deletedSections || []).includes(idea?.sectionId || target.id)))throw new Error("Сначала завершите синхронизацию и разрешите конфликты.");
+      if(other.target.kind==="library" && other.entries?.some(row=>row.target.id===target.id && row.target.kind===target.kind))throw new Error("Сначала завершите синхронизацию и разрешите конфликты.");
       if(other.target.kind==="section-tree" && (!other.section && (idea?.sectionId===other.target.id || other.deletedIds.includes(target.id))) || target.kind==="section-tree" && other.idea?.sectionId===target.id)throw new Error("Сначала завершите синхронизацию и разрешите конфликты.");
     }
     const sequence=(await request<number>(meta.get("scoped-sequence")) || 0)+1;
     const next:ScopedEntry={scope,target,sequence,base:previous?.base || base,local,...(previous?.operation?{operation:previous.operation}:{}),...((previous?.creationParent || creationParent)?{creationParent:previous?.creationParent || creationParent}:{})};
+    if(files?.size){const cache=await request<CacheState>(meta.get(cacheKey)) || {};for(const [id,blob] of files){tx.objectStore("media").put(blob,id);delete cache[id];}meta.put(cache,cacheKey);}
     meta.put(sequence,"scoped-sequence");meta.put(next,key);meta.put([...index.filter(row=>row.key!==key),summary(next)],indexKey);return next;
   });notifyScoped(scope);return entry;
 }
@@ -96,14 +111,14 @@ export async function rebaseScoped(entry:ScopedEntry,base:ScopedRead,local:Entit
   });
 }
 /** Cache the verified result and acknowledge its queue generation in one transaction. */
-export async function settleScoped(entry:ScopedEntry,read:ScopedRead,values:EntityMap,document?:{idea:Project;version:string},committed?:ScopedRead) {
+export async function settleScoped(entry:ScopedEntry,read:ScopedRead,values:EntityMap,document?:{idea:Project;version:string;editBase?:ScopedRead}|{idea:Project;version:string;editBase?:ScopedRead}[],committed?:ScopedRead) {
   const revisionBytes=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(JSON.stringify(read.heads)));
   const revision=[...new Uint8Array(revisionBytes)].map(byte=>byte.toString(16).padStart(2,"0")).join("");
   await transaction(["meta","media"],"readwrite",async tx=>{
     const meta=tx.objectStore("meta"),key=targetKey(entry.scope,entry.target),current=await request<ScopedEntry|undefined>(meta.get(key));
     if(!current)return;
     await advanceReaderEpochIn(tx,entry.scope);
-    // A reset acknowledges the whole read-back domain, including concurrent additions that survived merging.
+    // A bulk change acknowledges the whole read-back domain, including concurrent additions that survived merging.
     const rows=entry.target.kind==="library" ? Object.keys(values).filter(key=>key.startsWith("idea:") || key.startsWith("section:")).sort((a,b)=>a.localeCompare(b)).map(key=>summary({...entry,target:{kind:key.startsWith("idea:")?"idea":"section",id:JSON.parse(key.slice(key.indexOf(":")+1))[0]},local:values})) : summary({...entry,local:values});
     await settleReaderPagesIn(tx,entry.scope,rows,revision,read.index);
     const counter=(await request<number>(meta.get("scoped-confirmed-counter")) || 0)+1;
@@ -127,7 +142,7 @@ export async function settleScoped(entry:ScopedEntry,read:ScopedRead,values:Enti
     }
     meta.put(aliases,"scoped-media-aliases");meta.put(cache,cacheKey);await pruneCacheIn(tx,entry.scope,MEDIA_CACHE_LIMIT);
     const index=await request<ScopedSummary[]>(meta.get(indexKey)) || [];
-    if(document)await writeReaderCacheIn(tx,entry.scope,"idea",document.idea.id,{...document,offline:false,editBase:read});
+    if(document)for(const value of Array.isArray(document)?document:[document])await writeReaderCacheIn(tx,entry.scope,"idea",value.idea.id,{...value,offline:false,editBase:value.editBase || read});
     else if(entry.target.kind==="idea")await removeReaderCacheIn(tx,entry.scope,"idea",entry.target.id);
     await writeReaderCacheIn(tx,entry.scope,"idea",editCacheId(entry.target),read);
     const sentSequence=entry.operation?.sequence ?? entry.sequence;

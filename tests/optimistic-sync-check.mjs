@@ -11,7 +11,7 @@ const fileFor=text=>{const bytes=Buffer.from(text),sha256=createHash("sha256").u
 const file=fileFor("existing immutable media"),asset={id:file.id,name:"image.png",kind:"image",mime:file.mime,size:file.size};
 const library={version:1,sections:[{id:"s",name:"Section",description:"",icon:"folder"}],projects:[{id:"i",sectionId:"s",name:"Idea",description:"",cover:"forest",updatedAt:"2026-01-01T00:00:00Z",blocks:[{id:"b",heading:"Heading",text:"Before",media:[asset]}]}]};
 const target={kind:"idea",id:"i"},key=entityKey("block","i","b"),calls=[],operations=[];
-let pending,settled,hashes=0,lose=false,sources=[file];
+let pending,settled,hashes=0,lose=false,sources=[file],pendingIndex=[];
 async function api(path,init) {
   const body=JSON.parse(init.body);calls.push({path,method:init.method,body});
   try {
@@ -25,7 +25,7 @@ const modules={
   "./entity-sync":schema,"./entity-client":{...client,localMedia:async()=>{hashes++;return sources;}},
   "./cloud-library":{revisionPattern:/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/,libraryAssets:library=>new Map(library.projects.flatMap(idea=>[...(idea.coverImage?[idea.coverImage]:[]),...idea.blocks.flatMap(block=>block.media || [])]).map(asset=>[asset.id,asset])),parseCloudMedia:value=>value},
   "./reader-cache":{readReaderCache:async(_scope,_kind,id)=>cache.get(id),writeReaderCache:async(_scope,_kind,id,value)=>cache.set(id,value)},"./scoped-types":{editCacheId:target=>`edit:${target.kind}:${target.id}`},"./ideas":{summarizeIdea},
-  "./scoped-store":{readScopedEntry:async()=>pending,persistScopedOperation:async(entry,operation)=>{assert.equal(entry.sequence,pending.sequence);pending={...entry,operation};operations.push(operation);return true;},clearScopedOperation:async()=>{delete pending.operation;},settleScoped:async(_entry,read,values,document)=>{settled={read,values,document};pending=null;},rebaseScoped:async(entry,read,values)=>({...entry,base:read,local:values})},
+  "./scoped-store":{readScopedEntry:async(_scope,target)=>pending && schema.equal(pending.target,target)?pending:undefined,readScopedIndex:async()=>pendingIndex,persistScopedOperation:async(entry,operation)=>{assert.equal(entry.sequence,pending.sequence);pending={...entry,operation};operations.push(operation);return true;},clearScopedOperation:async()=>{delete pending.operation;},settleScoped:async(_entry,read,values,document)=>{settled={read,values,document};pending=null;},rebaseScoped:async(entry,read,values)=>({...entry,base:read,local:values})},
   "./cloud-access":{cloudFetch:api,CloudAccessError:class extends Error{}},
 };
 const exports={},navigator={onLine:true};vm.runInNewContext(ts.transpileModule(await readFile("lib/scoped-client.ts","utf8"),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports,require:name=>{assert.ok(Object.hasOwn(modules,name),name);return modules[name];},crypto,structuredClone,TextEncoder,Date,AbortSignal,navigator});
@@ -64,6 +64,12 @@ try {
   const prepared=await exports.prepareTarget("fixture",sectionTarget,library.sections[0]);assert.equal(calls.length,0,"A known section edit base needs no repeated read");
   pending={...prepared.entry,sequence:2,local:{...prepared.entry.local,[entityKey("section","s")]:{...library.sections[0],description:"Changed section"}}};
   await exports.flushScoped(pending);assert.deepEqual(calls.map(call=>call.method),["PUT"],"A section update uses the same checked one-PUT path");
+  // Editing a pending import reuses the owning queue generation, without reading stale cloud data.
+  const importTarget={kind:"library",id:"all"},importBase=await f.entities().readScoped(importTarget);
+  pending={scope:"fixture",target:importTarget,base:importBase,local:flattenLibrary(library,[file]),sequence:3};
+  pendingIndex=[{scope:"fixture",target:importTarget,entries:[{target},{target:sectionTarget}]}];calls.length=0;
+  for(const selected of [target,sectionTarget])assert.equal((await exports.prepareTarget("fixture",selected)).entry,pending);
+  assert.equal(calls.length,0,"Pending imported ideas and sections remain editable locally");pendingIndex=[];pending=null;
   // A whole-library reset is one resumable scoped operation, never a compatibility sync.
   const resetTarget={kind:"library",id:"all"},resetBase=await f.entities().readScoped(resetTarget);
   const resetLocal=Object.fromEntries(Object.entries(schema.validateRead(resetBase,{},{}).remote).map(([key,value])=>[key,schema.keyParts(key).kind==="media"?value:null]));

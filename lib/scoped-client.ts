@@ -2,7 +2,7 @@ import { assembleLibrary,canonicalLibrary,contentId,entityKey,equal,flattenLibra
 import { localMedia,resolvePlan,uploadNeeded,validateRead,type EntityPlan,type SyncChoices } from "./entity-client";
 import { revisionPattern,libraryAssets,parseCloudMedia,type CloudMedia } from "./cloud-library";
 import { readReaderCache,writeReaderCache } from "./reader-cache";
-import { clearScopedOperation,persistScopedOperation,queueScoped,readScopedEntry,rebaseScoped,settleScoped } from "./scoped-store";
+import { clearScopedOperation,persistScopedOperation,queueScoped,readScopedEntry,readScopedIndex,rebaseScoped,settleScoped } from "./scoped-store";
 import { editCacheId as cacheId,type ScopedEntry,type ScopedRead,type SyncTarget } from "./scoped-types";
 import { cloudFetch,CloudAccessError } from "./cloud-access";
 import { summarizeIdea,type IdeaSummary,type Project,type Section } from "./ideas";
@@ -38,6 +38,8 @@ function matchesVisibleTarget(library:import("./ideas").Library,target:SyncTarge
 export async function prepareTarget(scope:string,target:SyncTarget,visible?:Project|IdeaSummary|Section,viewBase?:ScopedRead) {
   const pending=await readScopedEntry(scope,target);
   if(pending)return {entry:pending,library:assembleLibrary(pending.local)};
+  const batch=(await readScopedIndex()).find(row=>row.scope===scope && row.target.kind==="library" && row.entries?.some(child=>equal(child.target,target)));
+  if(batch){const entry=await readScopedEntry(scope,batch.target);if(entry)return {entry,library:assembleLibrary(entry.local)};}
   if(target.kind!=="section-tree" && visible?.id===target.id) {
     const document=target.kind==="idea"?await readReaderCache<{editBase?:ScopedRead}>(scope,"idea",target.id).catch(()=>undefined):undefined;
     const cached=await readReaderCache<ScopedRead>(scope,"idea",cacheId(target)).catch(()=>undefined);
@@ -98,7 +100,18 @@ async function finish(entry:ScopedEntry,read:ScopedRead,base:EntityMap,committed
   // Post-commit remote versions may have forked; never acknowledge a winner implicitly.
   if(plan.conflicts.length){const next=await rebaseScoped(entry,committed || read,base);return {plan:scopedPlan(next || entry,read)};}
   const values=resolvePlan(plan).values,library=assembleLibrary(values),idea=library.projects.find(idea=>idea.id===entry.target.id);
-  await settleScoped(entry,read,values,idea?{idea,version:await versionOf(read,idea)}:undefined,committed);
+  let document:{idea:Project;version:string;editBase?:ScopedRead}|{idea:Project;version:string;editBase:ScopedRead}[]|undefined=idea?{idea,version:await versionOf(read,idea)}:undefined;
+  if(entry.target.kind==="library"){
+    const before=validateRead(entry.base,{},{}).remote;
+    document=await Promise.all(library.projects.filter(idea=>Object.keys(values).some(key=>{
+      const part=keyParts(key);return !equal(values[key],before[key] || null) && (part.kind==="section" && part.ids[0]===idea.sectionId || (part.kind==="idea" || part.kind==="block") && part.ids[0]===idea.id);
+    })).map(async idea=>{
+      const keys=new Set([entityKey("idea",idea.id),entityKey("section",idea.sectionId),...idea.blocks.map(block=>entityKey("block",idea.id,block.id))]);
+      const editBase:ScopedRead={target:{kind:"idea",id:idea.id},heads:read.heads,index:Object.fromEntries(Object.entries(read.index).filter(([key])=>keys.has(key))),records:read.records.filter(record=>keys.has(record.key))};
+      return {idea,version:await versionOf(read,idea),editBase};
+    }));
+  }
+  await settleScoped(entry,read,values,document,committed);
   return {read,...(committed?.heads.length===1?{ownRevision:committed.heads[0]}:{})};
 }
 /** Existing ideas/sections use their causal base; new/noncanonical media use the merge path. */

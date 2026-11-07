@@ -59,7 +59,7 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
     setPreview(null);
     setImportPlan(null);setChoices({});
     setExamplePreview(false);
-    try { const backup=await readLibraryBackup(file),source=loadLibrary?await loadLibrary():{library};previewBase.current=structuredClone(source.library);const plan=await prepareLibraryImport(backup,previewBase.current,scope,source.checkpoint);setPreview(backup);setImportPlan(plan); setStatus(t("Архив проверен. Текущая библиотека пока не изменена.")); }
+    try { const backup=await readLibraryBackup(file),source=loadLibrary?await loadLibrary():{library};previewBase.current=structuredClone(source.library);const plan=await prepareLibraryImport(backup,previewBase.current,scope,source.cloud);setPreview(backup);setImportPlan(plan); setStatus(t("Архив проверен. Текущая библиотека пока не изменена.")); }
     catch (reason) { setStatus(""); setError(reason instanceof Error ? reason.message : t("Не удалось прочитать архив.")); }
     finally { finish(); }
   }
@@ -80,7 +80,7 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
     if (!begin(t("Подготавливаем медиа…"))) return;
     try {
       const source=loadLibrary?await loadLibrary():{library};previewBase.current = structuredClone(source.library);
-      const backup=await prepareExampleBackup();setImportPlan(await prepareLibraryImport(backup,previewBase.current,scope,source.checkpoint));setChoices({});setPreview(backup);
+      const backup=await prepareExampleBackup();setImportPlan(await prepareLibraryImport(backup,previewBase.current,scope,source.cloud));setChoices({});setPreview(backup);
       setExamplePreview(true); setError(""); setStatus(t("Пример подготовлен. Текущая библиотека пока не изменена."));
     } catch { setPreview(null); setError(t("Не удалось загрузить медиа Example. Проверь соединение и попробуй ещё раз.")); }
     finally { finish(); }

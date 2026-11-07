@@ -2,7 +2,9 @@ import { translate as t } from "./i18n";
 import { readLocalSnapshot, saveLocalLibrary } from "./library-store";
 import { zip, unzip, type Zippable } from "fflate";
 import { createId, parseLibrary, type Library, type MediaAsset,type Project } from "./ideas";
-import {stable,type SyncCheckpoint} from "./entity-sync";
+import {stable,flattenLibrary,validateRead,keyParts} from "./entity-sync";
+import {queueScoped} from "./scoped-store";
+import type {ScopedRead} from "./scoped-types";
 import { projectMediaIds, removeMediaFiles,readMediaFile } from "./media-store";
 
 import { getMediaFile } from "./media-cache";
@@ -13,8 +15,9 @@ type ManifestFile = { id: string; path: string; size: number; sha256: string };
 type Manifest = { format: "idea-bank-backup"; version: 1; createdAt: string; librarySha256: string; media: ManifestFile[] };
 export type LibraryBackup = { library: Library; files: ReadonlyMap<string, Blob>; createdAt: string; totalBytes: number;hashes?:ReadonlyMap<string,string> };
 export type ImportChoice="current"|"archive"|"both";
-export type BackupSource={library:Library;checkpoint?:SyncCheckpoint};
-export type LibraryImportPlan={backup:LibraryBackup;base:Library;checkpoint?:SyncCheckpoint;conflicts:{id:string;current:Project;incoming:Project}[];added:number;unchanged:number;sectionsAdded:number;copies:Map<string,string>;same:Set<string>;currentHashes:Map<string,string>;archiveHashes:Map<string,string>};
+export type CloudImportBase={scope:string;read:ScopedRead};
+export type BackupSource={library:Library;cloud?:CloudImportBase};
+export type LibraryImportPlan={backup:LibraryBackup;base:Library;cloud?:CloudImportBase;conflicts:{id:string;current:Project;incoming:Project}[];added:number;unchanged:number;sectionsAdded:number;copies:Map<string,string>;same:Set<string>;currentHashes:Map<string,string>;archiveHashes:Map<string,string>};
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const digest = async (bytes: Uint8Array) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>))).map(value => value.toString(16).padStart(2, "0")).join("");
 const validHash = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
@@ -121,10 +124,10 @@ async function copyId(id:string,signature:string,salt=0) {
   return `${hash.slice(0,8)}-${hash.slice(8,12)}-4${hash.slice(13,16)}-a${hash.slice(17,20)}-${hash.slice(20,32)}`;
 }
 /** Inspect without writing; an unresolved difference can never overwrite either version. */
-export async function prepareLibraryImport(backup:LibraryBackup,current:Library,scope?:string,checkpoint?:SyncCheckpoint):Promise<LibraryImportPlan> {
+export async function prepareLibraryImport(backup:LibraryBackup,current:Library,scope?:string,cloud?:CloudImportBase):Promise<LibraryImportPlan> {
   const base=parseLibrary(JSON.stringify(current)),incoming=parseLibrary(JSON.stringify(backup.library));
   const plan:LibraryImportPlan={backup:{...backup,library:incoming},base,conflicts:[],added:0,unchanged:0,sectionsAdded:incoming.sections.filter(section=>!base.sections.some(value=>value.id===section.id)).length,copies:new Map(),same:new Set(),currentHashes:new Map(),archiveHashes:new Map(backup.hashes)};
-  if(checkpoint?.scope===scope)plan.checkpoint=checkpoint;
+  if(cloud && cloud.scope===scope)plan.cloud=cloud;
   for(const asset of collectAssets(base).values())if(/^[a-f0-9]{64}-[a-f0-9]{32}$/.test(asset.id))plan.currentHashes.set(asset.id,asset.id.slice(0,64));
   const currentFile=async(id:string)=>{try{return await getMediaFile(id,scope);}catch{return undefined;}};
   for(const idea of incoming.projects) {
@@ -148,7 +151,7 @@ export async function prepareLibraryImport(backup:LibraryBackup,current:Library,
 }
 /** Commit selected additions/updates and their media atomically; never remove absent ideas. */
 export async function importLibraryBackup(plan:LibraryImportPlan,choices:Record<string,ImportChoice>):Promise<Library> {
-  const expected=await readLocalSnapshot();
+  const expected=plan.cloud?null:await readLocalSnapshot();
   if(expected && stable(expected.library)!==stable(plan.base))throw new Error(t("Библиотека изменилась в другой вкладке. Повтори восстановление, чтобы не потерять изменения."));
   const next=structuredClone(plan.base),selected:Project[]=[];
   for(const section of plan.backup.library.sections)if(!next.sections.some(value=>value.id===section.id))next.sections.push(structuredClone(section));
@@ -181,10 +184,16 @@ export async function importLibraryBackup(plan:LibraryImportPlan,choices:Record<
   }
   for(const idea of selected){if(idea.coverImage)idea.coverImage.id=replacements.get(idea.coverImage.id)!;for(const block of idea.blocks)for(const asset of block.media || [])asset.id=replacements.get(asset.id)!;}
   const checked=parseLibrary(JSON.stringify(next));
-  try{await saveLocalLibrary(checked,expected?.library || null,{files,...(plan.checkpoint?{checkpoint:plan.checkpoint,guardScope:plan.checkpoint.scope}:{})});}
-  catch(reason){if(reason instanceof Error && reason.message===t("Сначала завершите синхронизацию и разрешите конфликты."))throw reason;throw new Error(t("Не удалось записать библиотеку: проверь свободное место и разрешения браузера. Прежняя библиотека сохранена."));}
+  try{
+    if(plan.cloud){
+      const {scope,read}=plan.cloud,local=flattenLibrary(checked);
+      for(const [key,value] of Object.entries(validateRead(read,{},{}).remote))if(!Object.hasOwn(local,key))local[key]=keyParts(key).kind==="media"?value:null;
+      await queueScoped(scope,read.target,read,local,0,undefined,files);
+    }else await saveLocalLibrary(checked,expected?.library || null,{files});
+  }
+  catch(reason){if(reason instanceof Error && ["Сначала завершите синхронизацию и разрешите конфликты.","Библиотека изменилась в другой вкладке. Сохранение остановлено, чтобы не потерять изменения."].some(message=>t(message)===t(reason.message)))throw new Error(t(reason.message));throw new Error(t("Не удалось записать библиотеку: проверь свободное место и разрешения браузера. Прежняя библиотека сохранена."));}
   const kept=new Set(checked.projects.flatMap(projectMediaIds));
-  void removeMediaFiles([...currentAssets.keys()].filter(id=>!kept.has(id))).catch(()=>{});
+  if(!plan.cloud)void removeMediaFiles([...currentAssets.keys()].filter(id=>!kept.has(id))).catch(()=>{});
   return checked;
 }
 
