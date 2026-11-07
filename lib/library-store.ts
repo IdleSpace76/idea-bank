@@ -99,16 +99,32 @@ export const readLocalRaw = async () => { const state = await readLocalSnapshot(
 export const readMeta = <T,>(key: string) => transaction(["meta"], "readonly", tx => request<T | undefined>(tx.objectStore("meta").get(key)));
 export const readOutbox = () => transaction(["outbox"], "readonly", tx => request<PendingChange[]>(tx.objectStore("outbox").getAll()));
 
+/** Provenance and revision identify an automatically generated seed, not a user save. */
+export async function isPristineStarterIn(tx: IDBTransaction): Promise<boolean> {
+  const meta=tx.objectStore("meta"),layout=await request<Layout|undefined>(meta.get("layout"));
+  if(!layout || !Number.isSafeInteger(layout.revision) || layout.revision<1)return false;
+  const starter=await request<{version:number;revision:number}|undefined>(meta.get("starter"));
+  if(starter?.version===1 && starter.revision===layout.revision)return true;
+  const migration=await request<{version:number;legacy:boolean}|undefined>(meta.get("migration"));
+  return !starter && migration?.version===1 && migration.legacy===false && layout.revision===1;
+}
+/** Seed puts alone do not represent personal changes; an in-flight operation always does. */
+export async function hasPendingLegacyIn(tx: IDBTransaction): Promise<boolean> {
+  const meta=tx.objectStore("meta"),outbox=tx.objectStore("outbox");
+  if(await request(meta.get("sync-operation")))return true;
+  if(!await request(outbox.count()))return false;
+  if(!await isPristineStarterIn(tx))return true;
+  const layout=await request<Layout>(meta.get("layout")),changes=await request<PendingChange[]>(outbox.getAll());
+  return changes.some(change=>change.sequence!==layout.revision || change.operation!=="put" || change.base!==null);
+}
+export const hasPendingLegacyChanges=()=>transaction(["meta","outbox"],"readonly",hasPendingLegacyIn);
+
 /** Only an untouched generated seed may be replaced automatically on first cloud connection. */
 export function isPristineStarter(expected: Library): Promise<boolean> {
   return transaction(["meta", "sections", "ideas", "blocks"], "readonly", async tx => {
     const snapshot = await snapshotIn(tx);
     if (!snapshot || !same(snapshot.library, expected)) return false;
-    const starter = await request<{ version: number; revision: number } | undefined>(tx.objectStore("meta").get("starter"));
-    if (starter?.version === 1 && starter.revision === snapshot.revision) return true;
-    // Older releases already recorded seed provenance. Revision 1 proves no later save occurred.
-    const migration = await request<{ version: number; legacy: boolean } | undefined>(tx.objectStore("meta").get("migration"));
-    return !starter && migration?.version === 1 && migration.legacy === false && snapshot.revision === 1;
+    return isPristineStarterIn(tx);
   });
 }
 

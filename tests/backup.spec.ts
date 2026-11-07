@@ -1,4 +1,4 @@
-import { deleteLocalDatabase, readStoredLibrary, setStoredLibrary } from "./local-fixture";
+import { deleteLocalDatabase, readStoredLibrary, setStoredLibrary,exposeLibraryStore } from "./local-fixture";
 import { expect, test, type Page } from "@playwright/test";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -216,27 +216,48 @@ test("a library changed during staging is preserved instead of overwritten", asy
   const after = await snapshot(page); expect(JSON.parse(after.raw!)).toEqual(changed); expect(after.files).toEqual(before.files);
 });
 
-test("Example is the only starter idea and loading it uses the merge choices", async ({ page }) => {
+test("Example adds directly once and never replaces an existing edited sample", async ({ page }) => {
   expect(demoLibrary.projects).toHaveLength(1); expect(demoLibrary.projects[0].name).toBe("Example");
   await page.goto("/"); await expect(page.locator(".project-card")).toHaveCount(1);
   const personal = smallLibrary();
   await seed(page, personal, [{ id: "shared-image", mime: "image/png", base64: pixel.toString("base64") }]);
   const before = await snapshot(page); await openBackups(page);
+  const exampleRequests:string[]=[],trackExample=(request:import("@playwright/test").Request)=>exampleRequests.push(request.url());page.on("request",trackExample);
   await page.getByRole("button", { name: "Загрузить Example", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Пример Example", exact: true })).toBeVisible();
+  await expect(page.locator(".backup-status")).toHaveText("Example уже есть в библиотеке.");
+  expect(exampleRequests).toEqual([]);await expect(page.locator(".backup-preview")).toHaveCount(0);page.off("request",trackExample);
   expect(await snapshot(page)).toEqual(before);
-  await page.getByRole("button", { name: "Отмена", exact: true }).click(); expect(await snapshot(page)).toEqual(before);
+  await page.getByRole("button",{name:"Понятно",exact:true}).click();personal.projects[0].id="personal";
+  await seed(page,personal,[{id:"shared-image",mime:"image/png",base64:pixel.toString("base64")}]);await openBackups(page);
   await page.getByRole("button", { name: "Загрузить Example", exact: true }).click();
-  await importIdeas(page);
   await expect(page.getByRole("dialog")).toHaveCount(0); await page.reload();
-  await expect(page.locator(".project-card")).toHaveCount(1); await expect(page.locator(".project-card > strong")).toHaveText("Example");
+  await expect(page.locator(".project-card")).toHaveCount(2);
   const restored = JSON.parse((await snapshot(page)).raw!);
-  restored.projects[0].blocks[1].media.forEach((asset: MediaAsset, index: number) => {
+  expect(restored.projects.find((idea:Library["projects"][number])=>idea.id==="personal")).toEqual(personal.projects[0]);
+  const example=restored.projects.find((idea:Library["projects"][number])=>idea.id==="example");
+  example.blocks[1].media.forEach((asset: MediaAsset, index: number) => {
     expect(asset.id).not.toBe(demoLibrary.projects[0].blocks[1].media![index].id);
     asset.id = demoLibrary.projects[0].blocks[1].media![index].id;
   });
-  expect(restored).toEqual(demoLibrary);
-  await expect.poll(async () => (await snapshot(page)).files.length).toBe(2);
+  example.updatedAt=demoLibrary.projects[0].updatedAt;expect(example).toEqual(demoLibrary.projects[0]);
+  await expect.poll(async () => (await snapshot(page)).files.length).toBe(3);
+});
+
+test("only untouched generated seed puts are exempt from the legacy pending guard",async({page})=>{
+  await page.goto("/");await expect(page.locator(".project-card")).toHaveCount(1);await exposeLibraryStore(page);
+  const states=await page.evaluate(async()=>{
+    const storePath="/__local_fixture__/library-store.js",dbPath="/__local_fixture__/local-database.js";
+    const {hasPendingLegacyChanges,readOutbox,readLocalLibrary,saveLocalLibrary}=await import(storePath),{transaction}=await import(dbPath);
+    const results=[{pending:await hasPendingLegacyChanges(),count:(await readOutbox()).length}];
+    await transaction(["meta"],"readwrite",async(tx:IDBTransaction)=>{tx.objectStore("meta").delete("starter");});
+    results.push({pending:await hasPendingLegacyChanges(),count:(await readOutbox()).length});
+    await transaction(["meta"],"readwrite",async(tx:IDBTransaction)=>{tx.objectStore("meta").put({body:{operationId:"fixture-inflight"}},"sync-operation");});
+    results.push({pending:await hasPendingLegacyChanges(),count:(await readOutbox()).length});
+    await transaction(["meta"],"readwrite",async(tx:IDBTransaction)=>{tx.objectStore("meta").delete("sync-operation");});
+    const old=await readLocalLibrary(),next=structuredClone(old);next.projects[0].description="Personal edit";await saveLocalLibrary(next,old);
+    results.push({pending:await hasPendingLegacyChanges(),count:(await readOutbox()).length});return results;
+  });
+  expect(states.map(state=>state.pending)).toEqual([false,false,true,true]);expect(states.every(state=>state.count>0)).toBe(true);
 });
 
 test("clear your head requires confirmation and leaves an empty library without Example", async ({ page }) => {

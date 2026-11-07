@@ -1,4 +1,5 @@
 import { request,transaction } from "./local-database";
+import { hasPendingLegacyIn } from "./library-store";
 import { equal,entityKey,keyParts,mergeValue,type EntityMap } from "./entity-sync";
 import { summarizeIdea,type IdeaSummary,type Project,type Section } from "./ideas";
 import { removeReaderCacheIn,writeReaderCacheIn,settleReaderPagesIn,advanceReaderEpochIn } from "./reader-cache";
@@ -56,6 +57,7 @@ function summary(entry:ScopedEntry):ScopedSummary {
     return {key:targetKey(entry.scope,target),scope:entry.scope,target,sequence:entry.sequence,deletedIds:[],...(target.kind==="idea"?{before:old?summarizeIdea(old as IdeaSummary):null,idea:entry.local[key]?summarizeIdea(entry.local[key] as IdeaSummary):null}:target.kind!=="library"?{section:entry.local[key] as Section|null}:{})};
   };
   const result=project(entry.target);
+  if(entry.target.kind==="idea" && result.idea && !entry.creationParent){const key=entityKey("section",result.idea.sectionId);if(!before.get(key) && entry.local[key])result.section=entry.local[key] as Section;}
   result.deletedIds=Object.entries(entry.local).filter(([key,value])=>key.startsWith("idea:") && !value).map(([key])=>keyParts(key).ids[0]);
   if(entry.target.kind==="library"){
     const touched=new Set<string>();
@@ -72,7 +74,7 @@ export async function queueScoped(scope:string,target:SyncTarget,base:ScopedRead
   const entry=await transaction(["meta",...(target.kind==="library"?["outbox"]:[]),...(files?.size?["media"]:[])],"readwrite",async tx=>{
     const meta=tx.objectStore("meta"),key=targetKey(scope,target),previous=await request<ScopedEntry|undefined>(meta.get(key));
     if((previous?.sequence || 0)!==expectedSequence)throw new Error("Библиотека изменилась в другой вкладке. Сохранение остановлено, чтобы не потерять изменения.");
-    if(target.kind==="library" && (await request(tx.objectStore("outbox").count()) || await request(meta.get("sync-operation"))))throw new Error("Сначала завершите синхронизацию и разрешите конфликты.");
+    if(target.kind==="library" && await hasPendingLegacyIn(tx))throw new Error("Сначала завершите синхронизацию и разрешите конфликты.");
     const index=await request<ScopedSummary[]>(meta.get(indexKey)) || [];
     for(const other of index.filter(row=>row.scope===scope && row.key!==key)) {
       const idea=local[entityKey("idea",target.id)] as {sectionId:string}|null;

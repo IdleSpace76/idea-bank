@@ -118,6 +118,8 @@ export const english: Record<string, string> = {
   "В браузере нет исходных сохранённых данных.": "There is no original saved data in this browser.",
   "Не удалось скачать исходные данные.": "Could not download the original data.",
   "Пример подготовлен. Текущая библиотека пока не изменена.": "Example is ready. Your current library has not been changed.",
+  "Добавляем Example…": "Adding Example…",
+  "Example уже есть в библиотеке.": "Example is already in your library.",
   "Резервная копия": "Backup",
   "ZIP содержит разделы, идеи, настройки блоков, обложки и все медиа. Поддерживается до 512 МБ данных на архив.": "The ZIP contains sections, ideas, block settings, covers and all media. Up to 512 MB of data per archive is supported.",
   "Сначала сохрани или отмени редактирование идеи, затем открой резервные копии.": "Save or cancel your idea edits before opening backups.",

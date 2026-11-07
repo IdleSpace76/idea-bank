@@ -53,6 +53,7 @@ export async function settleReaderPagesIn(tx:IDBTransaction,scope:string,rows:Sc
     if(versions && Object.hasOwn(versions,key) && JSON.stringify(next.applied?.[key])===JSON.stringify(versions[key]))continue;
     if(versions?.[key])next.applied={...next.applied,[key]:versions[key]};
     if(row.target.kind==="idea") {
+      if(row.section && !next.sections.some(section=>section.id===row.section!.id))next.sections.push(row.section);
       const current=next.ideas.find(idea=>idea.id===row.target.id);
       const alreadyApplied=current && JSON.stringify(current)===JSON.stringify(row.idea);
       if(!alreadyApplied) {

@@ -1,11 +1,11 @@
 "use client";
 import { translate as t, getLocale } from "@/lib/i18n";
 import { useI18n } from "./language-picker";
-import { loadExampleMedia } from "@/lib/example-media";
+import { createExample,type ExampleResult } from "@/lib/example-idea";
 
 import { useEffect, useRef, useState } from "react";
 import { Download, Eraser, FileArchive, LoaderCircle, RotateCcw, Upload, X } from "lucide-react";
-import { demoLibrary, STORAGE_KEY, type Library } from "@/lib/ideas";
+import { STORAGE_KEY, type Library } from "@/lib/ideas";
 import { createLibraryBackup, readLibraryBackup,prepareLibraryImport,importLibraryBackup, type LibraryBackup,type LibraryImportPlan,type ImportChoice,type BackupSource } from "@/lib/library-backup";
 import { clearLibrary } from "@/lib/library-reset";
 
@@ -16,19 +16,13 @@ function download(blob: Blob, filename: string) {
 }
 const sizeLabel = (bytes: number) => bytes < 1024 * 1024 ? t("{0} КБ", { 0: (bytes / 1024).toLocaleString(getLocale(), { maximumFractionDigits: 1 }) }) : t("{0} МБ", { 0: (bytes / (1024 * 1024)).toLocaleString(getLocale(), { maximumFractionDigits: 1 }) });
 
-async function prepareExampleBackup(): Promise<LibraryBackup> {
-  const files = await loadExampleMedia().catch(() => { throw new Error(t("Не удалось загрузить медиа Example. Проверь соединение и попробуй ещё раз.")); });
-  return { library: structuredClone(demoLibrary), files, createdAt: demoLibrary.projects[0].updatedAt, totalBytes: new TextEncoder().encode(JSON.stringify(demoLibrary)).length + [...files.values()].reduce((sum, file) => sum + file.size, 0) };
-}
-
-export function BackupControls({ scope, library, locked, readOnly, onBusyChange, onRestored, loadLibrary, onClear }: { scope?: string; library: Library; locked: boolean; readOnly: boolean; onBusyChange: (busy: boolean) => void; onRestored: (library: Library) => void; loadLibrary?: () => Promise<BackupSource>; onClear?:(expected:Library)=>Promise<Library> }) {
+export function BackupControls({ scope, library, locked, readOnly, onBusyChange, onRestored, loadLibrary, onClear,onExample }: { scope?: string; library: Library; locked: boolean; readOnly: boolean; onBusyChange: (busy: boolean) => void; onRestored: (library: Library) => void; loadLibrary?: () => Promise<BackupSource>; onClear?:(expected:Library)=>Promise<Library>;onExample?:()=>Promise<ExampleResult> }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false), [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<LibraryBackup | null>(null);
   const [importPlan,setImportPlan]=useState<LibraryImportPlan|null>(null);
   const [choices,setChoices]=useState<Record<string,ImportChoice>>({});
-  const [examplePreview, setExamplePreview] = useState(false);
   const [resetRequested, setResetRequested] = useState(false);
   const resetDialog = useRef<HTMLDialogElement>(null);
   const resetCancel = useRef<HTMLButtonElement>(null);
@@ -58,14 +52,13 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
     if (!begin(t("Проверяем библиотеку, медиа и целостность архива…"))) return;
     setPreview(null);
     setImportPlan(null);setChoices({});
-    setExamplePreview(false);
     try { const backup=await readLibraryBackup(file),source=loadLibrary?await loadLibrary():{library};previewBase.current=structuredClone(source.library);const plan=await prepareLibraryImport(backup,previewBase.current,scope,source.cloud);setPreview(backup);setImportPlan(plan); setStatus(t("Архив проверен. Текущая библиотека пока не изменена.")); }
     catch (reason) { setStatus(""); setError(reason instanceof Error ? reason.message : t("Не удалось прочитать архив.")); }
     finally { finish(); }
   }
   async function restore() {
     if (!importPlan || !begin(t("Объединяем идеи и медиа…"))) return;
-    try { const next = await importLibraryBackup(importPlan,choices); onRestored(next); }
+    try {const next = await importLibraryBackup(importPlan,choices); onRestored(next);}
     catch (reason) { setStatus(""); setError(reason instanceof Error ? reason.message : t("Не удалось восстановить библиотеку.")); }
     finally { finish(); }
   }
@@ -76,20 +69,18 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
       download(new Blob([raw], { type: "application/json" }), "idea-bank-original-data.json");
     } catch (reason) { setError(reason instanceof Error ? reason.message : t("Не удалось скачать исходные данные.")); }
   }
-  async function previewExample() {
-    if (!begin(t("Подготавливаем медиа…"))) return;
-    try {
-      const source=loadLibrary?await loadLibrary():{library};previewBase.current = structuredClone(source.library);
-      const backup=await prepareExampleBackup();setImportPlan(await prepareLibraryImport(backup,previewBase.current,scope,source.cloud));setChoices({});setPreview(backup);
-      setExamplePreview(true); setError(""); setStatus(t("Пример подготовлен. Текущая библиотека пока не изменена."));
-    } catch { setPreview(null); setError(t("Не удалось загрузить медиа Example. Проверь соединение и попробуй ещё раз.")); }
-    finally { finish(); }
+  async function addExample() {
+    if(readOnly || !begin(t("Добавляем Example…")))return;
+    setPreview(null);setImportPlan(null);setChoices({});
+    try{const result=await (onExample?onExample():createExample(library));if(result.exists)setStatus(t("Example уже есть в библиотеке."));else onRestored(result.library);}
+    catch(reason){setStatus("");setError(reason instanceof Error?reason.message:t("Не удалось загрузить медиа Example. Проверь соединение и попробуй ещё раз."));}
+    finally{finish();}
   }
   function requestReset() { if(!active.current && !locked && !readOnly){resetBase.current=structuredClone(library);setResetRequested(true);} }
   /** Clearing is the only backup action that removes every idea and section. */
   async function resetLibrary() {
     if (readOnly || !begin(t("Очищаем библиотеку…"))) return;
-    closeReset(); setPreview(null); setImportPlan(null);setExamplePreview(false);
+    closeReset(); setPreview(null); setImportPlan(null);
     try { const next = await (onClear?onClear(resetBase.current!):clearLibrary(undefined,resetBase.current!)); onRestored(next); }
     catch (reason) { setStatus(""); setError(t("Не удалось очистить рабочее пространство. Прежняя библиотека сохранена.")+(reason instanceof Error?` ${reason.message}`:"")); }
     finally { finish(); }
@@ -104,7 +95,7 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
       <label className={`secondary-button backup-upload ${busy || locked ? "is-disabled" : ""}`}><Download />{t("Импортировать ZIP")}<input type="file" accept=".zip,application/zip,application/x-zip-compressed" aria-label={t("Выбрать архив библиотеки")} disabled={busy || locked} onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void inspect(file); }} /></label>
     </div>
     <div className="backup-buttons backup-reset-buttons">
-      <button type="button" className="secondary-button" disabled={busy || locked} onClick={previewExample}><RotateCcw />{t("Загрузить Example")}</button>
+      <button type="button" className="secondary-button" disabled={busy || locked || readOnly} onClick={()=>{void addExample();}}><RotateCcw />{t("Загрузить Example")}</button>
       <button type="button" className="secondary-button danger" disabled={busy || locked || readOnly} onClick={() => { void requestReset(); }}><Eraser />{t("Очистить голову")}</button>
     </div>
     {resetRequested && <dialog ref={resetDialog} className="dialog reset-confirmation" aria-labelledby="reset-library-title" aria-describedby="reset-library-warning" onCancel={event => { event.preventDefault(); event.stopPropagation(); closeReset(); }} onClick={event => { if (event.target === event.currentTarget) closeReset(); }}>
@@ -116,9 +107,9 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
     {status && <p className="backup-status" role="status">{busy && <LoaderCircle />}{t(status)}</p>}
     {error && <p className="backup-error" role="alert">{t(error)}</p>}
     {preview && <div className="backup-preview">
-      <h3><FileArchive />{examplePreview ? t("Пример Example") : t("Библиотека из архива")}</h3>
+      <h3><FileArchive />{t("Библиотека из архива")}</h3>
       <dl><div><dt>{t("Разделов")}</dt><dd>{preview.library.sections.length}</dd></div><div><dt>{t("Идей")}</dt><dd>{preview.library.projects.length}</dd></div><div><dt>{t("Медиафайлов")}</dt><dd>{preview.files.size}</dd></div><div><dt>{t("Объём данных")}</dt><dd>{sizeLabel(preview.totalBytes)}</dd></div></dl>
-      {!examplePreview && <p>{t("Создан: ")}{new Date(preview.createdAt).toLocaleString(getLocale())}</p>}
+      <p>{t("Создан: ")}{new Date(preview.createdAt).toLocaleString(getLocale())}</p>
       <p>{t("Импорт добавит новые идеи и разделы. Отсутствующие в архиве идеи останутся в библиотеке. Существующие разделы сохранят свои названия и оформление.")}</p>
       {importPlan && <p className="backup-import-summary">{t("Новых идей: {0}. Уже есть: {1}. Отличаются: {2}.",{0:importPlan.added,1:importPlan.unchanged,2:importPlan.conflicts.length})}</p>}
       {importPlan?.conflicts.map(conflict=><fieldset className="backup-import-conflict" key={conflict.id} disabled={busy}>
@@ -129,7 +120,7 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
         <details><summary>{t("Сравнить версии")}</summary><div className="backup-import-comparison">{[[t("Текущая версия"),conflict.current],[t("Версия из архива"),conflict.incoming]].map(([label,value])=>{const idea=value as Library["projects"][number];return <div key={label as string}><strong>{label as string}</strong><h4>{idea.name}</h4><p>{idea.description}</p>{idea.blocks.map(block=><div key={block.id}><h5>{block.heading}</h5><p>{block.text}</p>{block.media?.map(asset=><small key={asset.id}>{asset.name}</small>)}</div>)}</div>;})}</div></details>
       </fieldset>)}
       {!!importPlan?.conflicts.some(conflict=>!choices[conflict.id]) && <p className="backup-warning">{t("Выберите вариант для каждой отличающейся идеи.")}</p>}
-      <div className="backup-buttons"><button type="button" className="secondary-button" disabled={busy} onClick={() => { setPreview(null);setImportPlan(null);setChoices({}); setStatus(""); setError(""); }}>{examplePreview ? t("Отмена") : t("Отмена импорта")}</button><button type="button" className="primary-button" disabled={busy || locked || !importPlan || importPlan.conflicts.some(conflict=>!choices[conflict.id])} onClick={() => { void restore(); }}>{t("Импортировать идеи")}</button></div>
+      <div className="backup-buttons"><button type="button" className="secondary-button" disabled={busy} onClick={() => { setPreview(null);setImportPlan(null);setChoices({}); setStatus(""); setError(""); }}>{t("Отмена импорта")}</button><button type="button" className="primary-button" disabled={busy || locked || !importPlan || importPlan.conflicts.some(conflict=>!choices[conflict.id])} onClick={() => { void restore(); }}>{t("Импортировать идеи")}</button></div>
     </div>}
   </section>;
 }

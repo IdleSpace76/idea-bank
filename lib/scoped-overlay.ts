@@ -16,6 +16,7 @@ export async function overlayPage(scope:string,page:ReaderPage,options:ReaderQue
   const matches=(idea:IdeaSummary|null|undefined)=>!!idea && (!options.sectionId || idea.sectionId===options.sectionId) && (!options.query?.trim() || `${idea.name}\n${idea.description}`.toLowerCase().includes(options.query.trim().toLowerCase()));
   const rows=pending.flatMap(row=>row.target.kind==="library" ? row.entries || (row.deletedSections || []).map(id=>({...row,target:{kind:"section-tree" as const,id},section:null})) : [row]);
   for(const row of rows) {
+    if(row.target.kind==="idea" && row.section)sections.set(row.section.id,row.section);
     if(row.target.kind!=="idea") {
       if(row.section)sections.set(row.section.id,row.section);
       else {

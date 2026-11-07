@@ -38,7 +38,7 @@ try {
         if(url.pathname==="/api/reader/batch")return reply(await entities.readReaderBatch(request.postDataJSON()));
         if(url.pathname==="/api/catalog")return reply(await entities.catalog().readPage({limit:Number(url.searchParams.get("limit")||24),cursor:url.searchParams.get("cursor")||undefined,sectionId:url.searchParams.get("sectionId")||undefined,query:url.searchParams.get("q")||undefined}));
         if(url.pathname==="/api/catalog/media")return reply(await entities.catalog().readMedia(url.searchParams.get("id")));
-        if(url.pathname.startsWith("/api/ideas/")){const result=await entities.catalog().readIdea(decodeURIComponent(url.pathname.split("/").pop()),request.headers()["if-none-match"]?.replaceAll('"',""));return result.notModified?route.fulfill({status:304,body:""}):reply(result);}
+        if(url.pathname.startsWith("/api/ideas/")){const result=await entities.catalog().readIdea(decodeURIComponent(url.pathname.split("/").pop()),request.headers()["if-none-match"]?.replaceAll('"',""),url.searchParams.get("versionOnly")==="1");return result.notModified?route.fulfill({status:304,body:""}):reply(result);}
         if(url.pathname==="/api/sync/scoped"){
           const body=request.postDataJSON();
           if(method==="POST" && body.target.kind==="library"){
@@ -73,7 +73,8 @@ try {
     const blank=cloud(),initial=await device(blank,viewport);await expect(initial.page.locator(".project-card > strong")).toHaveText("Example");await phase(initial.page,"synced");
     await expect.poll(async()=>(await state(initial.page)).layout).toBeUndefined();
     const initialWrites=initial.calls.filter(call=>call.method==="PUT").length;assert.equal(initialWrites,1,"An uninitialized cloud receives Example exactly once");
-    await initial.page.reload();await expect(initial.page.locator(".project-card > strong")).toHaveText("Example");await phase(initial.page,"synced");assert.equal(initial.calls.filter(call=>call.method==="PUT").length,initialWrites);await initial.context.close();
+    await initial.page.reload();await expect(initial.page.locator(".project-card > strong")).toHaveText("Example");await phase(initial.page,"synced");assert.equal(initial.calls.filter(call=>call.method==="PUT").length,initialWrites);
+    await open(initial.page);const beforeKnown=initial.calls.length;await initial.page.getByRole("button",{name:"Загрузить Example",exact:true}).click();await expect(initial.page.locator(".backup-controls:not(.cloud-sync-controls) .backup-status")).toHaveText("Example уже есть в библиотеке.");assert.equal(initial.calls.length,beforeKnown);await initial.context.close();
     // Old cloud snapshots must wait for explicit migration, then retire their complete local replica.
     const old=cloud();await old.storage.saveLibrary({baseRevisions:[],library:seed,media:[]});
     const {page,context,calls,network}=await device(old,viewport);await phase(page,"migration");await open(page);
@@ -100,16 +101,18 @@ try {
     assert.deepEqual(calls.slice(beforeExport).map(call=>`${call.method} ${call.path}`),["POST /api/sync/scoped"],"Export of text-only library is a single read, without sync mode/token/catalog reloads");
     assert.equal(archived.projects[0].blocks[0].text,"Keep this text");await close(page);
     await expect.poll(async()=>(await state(page)).layout).toBeUndefined();
-    // Previewing ZIP and Example also leaves the current reader mounted and makes no cloud writes.
+    // ZIP preview leaves the current reader mounted and makes no cloud writes.
     await open(page);
-    for(const action of ["zip","example"]){
+    for(const action of ["zip"]){
       const start=calls.length;let releasePreview,enteredPreview;
-      network.hold=new Promise(resolve=>releasePreview=resolve);const prepared=new Promise(resolve=>enteredPreview=resolve);network.entered=enteredPreview;
-      if(action==="zip")await page.getByLabel("Выбрать архив библиотеки",{exact:true}).setInputFiles({name:"library.zip",mimeType:"application/zip",buffer:zipBytes});
-      else await page.getByRole("button",{name:"Загрузить Example",exact:true}).click();
-      await prepared;await expect(page.locator(".project-card > strong")).toHaveText("Saved idea");await expect(page.locator('main .library-loading,main .reader-state:has-text("Загружаем")')).toHaveCount(0);releasePreview();
+      if(action==="zip"){
+        network.hold=new Promise(resolve=>releasePreview=resolve);const prepared=new Promise(resolve=>enteredPreview=resolve);network.entered=enteredPreview;
+        await page.getByLabel("Выбрать архив библиотеки",{exact:true}).setInputFiles({name:"library.zip",mimeType:"application/zip",buffer:zipBytes});
+        await prepared;await expect(page.locator(".project-card > strong")).toHaveText("Saved idea");releasePreview();
+      }
+      await expect(page.locator('main .library-loading,main .reader-state:has-text("Загружаем")')).toHaveCount(0);
       await expect(page.locator(".backup-preview")).toBeVisible();
-      assert.deepEqual(calls.slice(start).map(call=>`${call.method} ${call.path}`),["POST /api/sync/scoped"]);
+      assert.deepEqual(calls.slice(start).map(call=>`${call.method} ${call.path}`),action==="zip"?["POST /api/sync/scoped"]:[]);
       assert.equal((await state(page)).layout,undefined,"Preview never switches to a full replica");
       await page.getByRole("button",{name:action==="zip"?"Отмена импорта":"Отмена",exact:true}).click();
     }
@@ -145,10 +148,27 @@ try {
     await page.reload();await expect(page.locator(".project-card")).toHaveCount(0);
     page.off("request",trackReset);
     assert.ok(!resetRequests.some(path=>path.startsWith("/examples/") || path.includes("/media/") || path.includes("/sync/media")),"Confirmed reset never prepares Example or downloads media originals");
-    // A retained replica is not the cloud import's baseline and must never be replaced by it.
+    // An untouched generated seed may retain legacy puts, although the cloud reader is synced.
+    await page.evaluate(async()=>{const {initializeLocalLibrary}=await import("/__local_fixture__/library-store.js"),{demoLibrary}=await import("/__local_fixture__/ideas.js"),{loadExampleMedia}=await import("/__local_fixture__/example-media.js");await initializeLocalLibrary(async()=>({library:structuredClone(demoLibrary),files:await loadExampleMedia()}),{ignoreLegacy:true});});
+    const starterPending=(await state(page)).pending.length;assert.equal(starterPending,4);
+    await open(page);const beforeStarter=calls.length,starterRequests=[],trackStarter=request=>starterRequests.push(request.url());page.on("request",trackStarter);
+    let releaseExample,exampleEntered;network.holdWrite=new Promise(resolve=>releaseExample=resolve);const exampleWriting=new Promise(resolve=>exampleEntered=resolve);network.enteredWrite=exampleEntered;
+    await page.getByRole("button",{name:"Загрузить Example",exact:true}).click();await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.locator(".project-card > strong")).toHaveText("Example");await expect(page.locator(".section-open strong")).toHaveText("Examples");
+    await Promise.race([exampleWriting,delay(20000).then(()=>{throw new Error("Example creation did not start");})]);
+    assert.equal(calls.slice(beforeStarter).filter(call=>call.path==="/api/ideas/example").length,1,"A missing Example needs only its presence check before normal creation");
+    assert.ok(!calls.slice(beforeStarter).some(call=>call.path==="/api/sync" || call.body?.target?.kind==="library" || call.body?.readBack?.target?.kind==="library"),"Example never downloads or edits the entire library");
+    page.off("request",trackStarter);releaseExample();await phase(page,"synced");
+    assert.equal((await old.entities().catalog().readPage()).total,1);assert.equal((await state(page)).pending.length,starterPending,"The unused starter copy is preserved, not erased to bypass a guard");
+    await open(page);const beforeDuplicate=calls.length;await page.getByRole("button",{name:"Загрузить Example",exact:true}).click();await expect(page.locator(".backup-controls:not(.cloud-sync-controls) .backup-status")).toHaveText("Example уже есть в библиотеке.");assert.equal(calls.length,beforeDuplicate,"A locally known Example needs no cloud check or media read");await close(page);
+    await open(page);await page.getByRole("button",{name:"Очистить голову",exact:true}).click();await page.locator(".reset-library-confirm").click();await phase(page,"synced");
+    // ZIP import also accepts untouched starter puts and preserves that unused local copy.
     await expect.poll(async()=>(await old.entities().catalog().readPage()).total).toBe(0);
-    await page.evaluate(async({seed,scope})=>{const store=await import("/__local_fixture__/library-store.js");await store.saveLocalLibrary(seed,null,{remote:true,checkpoint:{version:2,scope:scope+"-old-copy",index:{},values:{},files:[],syncedAt:new Date().toISOString()}});},{seed,scope});
-    await open(page);await page.getByRole("button",{name:"Загрузить Example",exact:true}).click();await expect(page.locator(".backup-import-summary")).toContainText("Новых идей: 1.");
+    assert.equal((await state(page)).pending.length,starterPending);
+    const exampleLibrary=await page.evaluate(async()=>{const {demoLibrary}=await import("/__local_fixture__/ideas.js");return demoLibrary;}),exampleJson=Buffer.from(JSON.stringify(exampleLibrary)),exampleEntries={"library.json":exampleJson},exampleFiles=[];
+    for(const asset of exampleLibrary.projects.flatMap(idea=>idea.blocks.flatMap(block=>block.media || []))){const bytes=await readFile(`public/examples/${asset.name}`),path=`media/${exampleFiles.length}`;exampleEntries[path]=bytes;exampleFiles.push({id:asset.id,path,size:bytes.length,sha256:createHash("sha256").update(bytes).digest("hex")});}
+    exampleEntries["manifest.json"]=Buffer.from(JSON.stringify({format:"idea-bank-backup",version:1,createdAt:exampleLibrary.projects[0].updatedAt,librarySha256:createHash("sha256").update(exampleJson).digest("hex"),media:exampleFiles}));const exampleZip=Buffer.from(zipSync(exampleEntries));
+    await open(page);await page.getByLabel("Выбрать архив библиотеки",{exact:true}).setInputFiles({name:"example.zip",mimeType:"application/zip",buffer:exampleZip});await expect(page.locator(".backup-preview")).toBeVisible();
     // A real unacknowledged local write still blocks import, including all staged media.
     const mediaKeys=()=>page.evaluate(async()=>{const {transaction,request}=await import("/__local_fixture__/local-database.js");return transaction(["media"],"readonly",tx=>request(tx.objectStore("media").getAllKeys()));});
     const oldMedia=await mediaKeys(),beforeRefusal=calls.length;
@@ -168,14 +188,14 @@ try {
     await page.locator(viewport.width<540?".recent-project-item > button:not(.icon-button)":".project-card").click();await expect(page.locator(".content-block")).toHaveCount(2);assert.equal((await old.entities().catalog().readPage()).total,0,"Imported content is readable while its write is pending");const beforeAck=calls.length;releaseImport();
     await expect.poll(async()=>(await old.entities().catalog().readPage()).total).toBe(1);await phase(page,"synced");
     assert.ok(!calls.slice(beforeAck).some(call=>call.path==="/api/reader/batch"),"Acknowledgement must not re-download the imported body or media");
-    assert.deepEqual(await page.evaluate(async()=>{const store=await import("/__local_fixture__/library-store.js");return store.readLocalLibrary();}),seed,"Cloud import preserves a retained local copy");
+    assert.deepEqual(await page.evaluate(async()=>{const store=await import("/__local_fixture__/library-store.js");return store.readLocalLibrary();}),exampleLibrary,"Cloud import preserves the retained starter copy");
     const example=(await old.entities().catalog().readIdea("example")).idea;assert.equal(example.name,"Example");assert.equal(example.blocks.flatMap(block=>block.media || []).length,2);
-    assert.ok(!(await state(page)).pending.length,"Cloud Example import does not create a compatibility outbox");
+    assert.equal((await state(page)).pending.length,starterPending,"ZIP import creates no additional compatibility outbox entries");
     const bodyCalls=calls.length;
     const cachedExample=await page.evaluate(async scope=>{const {loadReaderIdea}=await import("/__local_fixture__/library-reader.js");return loadReaderIdea(scope,"example",undefined,true);},scope);
     assert.equal(cachedExample.idea.blocks.length,2);assert.equal(cachedExample.editBase.target.kind,"idea");assert.equal(calls.length,bodyCalls,"Acknowledged imports retain a bounded body cache without another request");
     const writesBeforeRepeat=calls.filter(call=>call.method==="PUT").length;
-    await open(page);await page.getByRole("button",{name:"Загрузить Example",exact:true}).click();await expect(page.locator(".backup-import-summary")).toContainText("Новых идей: 0. Уже есть: 1. Отличаются: 0.");
+    await open(page);await page.getByLabel("Выбрать архив библиотеки",{exact:true}).setInputFiles({name:"example.zip",mimeType:"application/zip",buffer:exampleZip});await expect(page.locator(".backup-preview")).toBeVisible();
     await page.getByRole("button",{name:"Импортировать идеи",exact:true}).click();await expect(page.getByRole("dialog")).toHaveCount(0);
     assert.equal(calls.filter(call=>call.method==="PUT").length,writesBeforeRepeat,"An identical Example import creates no write or duplicate");
     await context.close();
@@ -185,9 +205,12 @@ try {
     const file={id:"",sha256:createHash("sha256").update(bytes).digest("hex"),md5:createHash("md5").update(bytes).digest("hex"),size:bytes.length,mime:"image/png"};file.id=schema.contentId(file);
     many.objects.set(`${many.storage.prefix}/media/${file.id}`,{body:bytes,type:file.mime,metadata:{sha256:file.sha256},md5:file.md5});
     bulk.projects=Array.from({length:40},(_,n)=>({...structuredClone(seed.projects[0]),id:`bulk-${n}`,name:`Bulk ${n}`}));
-    bulk.projects.at(-1).blocks[0].media=[{id:file.id,name:"never-download.png",kind:"image",mime:file.mime,size:file.size}];
+    bulk.projects.at(-1).id="example";bulk.projects.at(-1).blocks[0].media=[{id:file.id,name:"never-download.png",kind:"image",mime:file.mime,size:file.size}];
     await many.entities().save({operationId:randomUUID(),heads:[],changes:Object.entries(schema.flattenLibrary(bulk,[file])).map(([key,value])=>({key,value,base:[]}))});
     const bulkClient=await device(many,viewport);await phase(bulkClient.page,"synced");await open(bulkClient.page);
+    const beforeHidden=bulkClient.calls.length;await bulkClient.page.getByRole("button",{name:"Загрузить Example",exact:true}).click();await expect(bulkClient.page.locator(".backup-controls:not(.cloud-sync-controls) .backup-status")).toHaveText("Example уже есть в библиотеке.");
+    assert.deepEqual(bulkClient.calls.slice(beforeHidden).map(call=>`${call.method} ${call.path}`),["GET /api/ideas/example"],"An existing Example outside loaded cards needs only the metadata presence endpoint");
+    assert.equal((await many.entities().catalog().readIdea("example")).idea.blocks[0].text,"Keep this text","Edited existing Example content is never replaced");
     const beforeBulkExport=bulkClient.calls.length,bulkDownload=bulkClient.page.waitForEvent("download");
     void bulkDownload.catch(()=>{});
     await bulkClient.page.getByRole("button",{name:"Экспортировать ZIP",exact:true}).click();

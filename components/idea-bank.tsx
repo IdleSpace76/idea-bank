@@ -19,6 +19,7 @@ import { readScopedIndex } from "@/lib/scoped-store";
 import type { ScopedEntry,SyncTarget } from "@/lib/scoped-types";
 import { assembleLibrary,entityKey,flattenLibrary,validateRead } from "@/lib/entity-sync";
 import type {BackupSource} from "@/lib/library-backup";
+import {createExample} from "@/lib/example-idea";
 import {retryCloudAccess} from "@/lib/cloud-access";
 import { useLibraryReader } from "./use-library-reader";
 import { useBlockDraft } from "./use-block-draft";
@@ -27,7 +28,7 @@ import { applyVisibleEdit, preserveUnchangedIdeaDates } from "@/lib/library-edit
 import { clearLibrary } from "@/lib/library-reset";
 import { SyncStatus } from "./sync-status";
 import { equal } from "@/lib/entity-sync";
-import { initializeLocalLibrary, readLocalLibrary, readMeta, readOutbox, retireCloudReplica, saveLocalLibrary, subscribeLocalChanges } from "@/lib/library-store";
+import { initializeLocalLibrary, readLocalLibrary, readMeta, readOutbox, hasPendingLegacyChanges,retireCloudReplica, saveLocalLibrary, subscribeLocalChanges } from "@/lib/library-store";
 import { logout } from "@/app/auth-actions";
 import { BlockEditor, ProjectBlocks } from "./project-blocks";
 import { describeMediaFile, mediaIds, projectMediaIds, removeMediaFiles, saveMediaFiles } from "@/lib/media-store";
@@ -454,6 +455,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
     if(bridgeRef.current || draft)throw new Error(t("Сначала завершите синхронизацию и разрешите конфликты."));
     bridgeRef.current=true;
     try {
+      if(await hasPendingLegacyChanges())throw new Error(t("Сначала завершите синхронизацию и разрешите конфликты."));
       if(navigator.onLine===false)throw new Error(t("Для работы с облачной библиотекой нужно подключение к интернету."));
       retryCloudAccess();
       if((await readScopedIndex()).some(row=>row.scope===cloudScope))await scoped.controller?.check(false,undefined,true);
@@ -599,7 +601,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
       : modal.type === "delete-section" ? <><p className="dialog-description">{t("Удалить «")}{modal.section.name}{t("»? Вместе с разделом будут удалены все его идеи (")}{projectCount(modal.section.id)}{t("). Это действие нельзя отменить.")}</p><div className="form-actions"><button className="secondary-button" onClick={() => setModal(null)}>{t("Отмена")}</button><button className="danger-button" onClick={() => removeSection(modal.section)}>{t("Удалить раздел")}</button></div></>
       : modal.type === "delete-project" ? <><p className="dialog-description">{t("Удалить «")}{modal.project.name}{t("» и все её текстовые блоки? Это действие нельзя отменить.")}</p><div className="form-actions"><button className="secondary-button" onClick={() => setModal(null)}>{t("Отмена")}</button><button className="danger-button" onClick={() => removeProject(modal.project)}>{t("Удалить идею")}</button></div></>
       : modal.type === "move-project" ? <div className="menu-options">{library.sections.map(s => <button disabled={s.id === modal.project.sectionId} key={s.id} onClick={async () => { const moved = { ...modal.project, sectionId: s.id, updatedAt: new Date().toISOString() }; if (await commit({ ...library, projects: library.projects.map(p => p.id === moved.id ? moved : p) }, t("Идея перенесена."))) setModal(null); }}><SectionSymbol icon={s.icon} /><span>{s.name}</span>{s.id === modal.project.sectionId && <Check />}</button>)}</div>
-      : <><div className="storage-info-icon"><Monitor /></div><p className="dialog-description">{t("Изменения сохраняются на устройстве и автоматически отправляются в подключённое облако. ZIP-копия позволяет сохранить отдельный архив библиотеки.")}</p><p className="dialog-description">{t("Облачное подключение доступно после входа владельца и настройки B2. Очистка данных сайта в браузере удалит локальную библиотеку и вложения.")}</p>{(legacySession ? automaticSync.controller : scoped.controller) && <CloudSyncControls controller={(legacySession ? automaticSync.controller : scoped.controller)!} view={syncView} library={fullLibrary || library} locked={!!draft || importingMedia || backupBusy || saving} readOnly={readOnly} />}<BackupControls onClear={clearBank} loadLibrary={cloudScope && !legacySession ? prepareBackupSource : undefined} scope={cloudScope} library={fullLibrary || library} locked={!!draft || saving || importingMedia || backupBusy || syncView.busy} readOnly={readOnly} onBusyChange={busy => { savingRef.current = busy; setBackupBusy(busy); }} onRestored={next => {
+      : <><div className="storage-info-icon"><Monitor /></div><p className="dialog-description">{t("Изменения сохраняются на устройстве и автоматически отправляются в подключённое облако. ZIP-копия позволяет сохранить отдельный архив библиотеки.")}</p><p className="dialog-description">{t("Облачное подключение доступно после входа владельца и настройки B2. Очистка данных сайта в браузере удалит локальную библиотеку и вложения.")}</p>{(legacySession ? automaticSync.controller : scoped.controller) && <CloudSyncControls controller={(legacySession ? automaticSync.controller : scoped.controller)!} view={syncView} library={fullLibrary || library} locked={!!draft || importingMedia || backupBusy || saving} readOnly={readOnly} />}<BackupControls onExample={()=>createExample(library,legacySession?undefined:cloudScope)} onClear={clearBank} loadLibrary={cloudScope && !legacySession ? prepareBackupSource : undefined} scope={cloudScope} library={fullLibrary || library} locked={!!draft || saving || importingMedia || backupBusy || syncView.busy} readOnly={readOnly} onBusyChange={busy => { savingRef.current = busy; setBackupBusy(busy); }} onRestored={next => {
         setFullLibrary(next); fullRef.current=next; reader.refreshLocal(); setReadOnly(false); setStorageError(""); setDraft(null); setPendingMedia(new Map()); setMediaError(""); setQuery(""); setSidebarQuery(""); setExpandedSections({});
         setRoute({ screen: "home" }); history.replaceState(null, "", "#/"); setModal(null); setMessage(t("Библиотека обновлена.")); window.scrollTo({ top: 0, behavior: "instant" });
       }} /><button className="primary-button full-width" disabled={backupBusy} onClick={() => setModal(null)}>{t("Понятно")}</button></>}
