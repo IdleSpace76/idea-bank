@@ -131,12 +131,15 @@ test("ZIP conflicts require a visible choice and support keeping either or both 
     await expect(page.getByRole("button",{name:"Импортировать идеи",exact:true})).toBeDisabled();
     await page.locator(".backup-import-conflict").getByText("Сравнить версии",{exact:true}).click();
     await expect(page.locator(".backup-import-comparison")).toContainText("Current idea");await expect(page.locator(".backup-import-comparison")).toContainText("Archive idea");
-    await page.locator(".backup-import-conflict").getByRole("button",{name:choice,exact:true}).click();
+    const option=page.locator(".backup-import-conflict").getByRole("button",{name:choice,exact:true});
+    const background=await option.evaluate(button=>getComputedStyle(button).backgroundColor);await option.hover();
+    await expect.poll(()=>option.evaluate(button=>getComputedStyle(button).backgroundColor)).not.toBe(background);
+    await option.click();
     await expect(page.locator(".backup-import-conflict").getByRole("button",{name:choice,exact:true})).toHaveAttribute("aria-pressed","true");
     if(choice==="Оставить текущую")await page.screenshot({path:info.outputPath("zip-conflict.png"),fullPage:true});
     await importIdeas(page,choice);await expect(page.getByRole("dialog")).toHaveCount(0);
     const merged=await page.evaluate(readStoredLibrary);
-    expect(merged.projects.map(idea=>idea.name).sort()).toEqual(choice==="Сохранить обе"?["Archive idea","Current idea"]:[choice==="Оставить текущую"?"Current idea":"Archive idea"]);
+    expect(merged.projects.map(idea=>idea.name).sort()).toEqual(choice==="Сохранить обе"?["Archive idea imported","Current idea"]:[choice==="Оставить текущую"?"Current idea":"Archive idea"]);
     if(choice==="Оставить текущую")expect(await snapshot(page)).toEqual(before);
     else {
       await expect.poll(async()=>(await snapshot(page)).files.map(file=>file.hash).sort()).toEqual((choice==="Сохранить обе"?[sha(pixel),sha(changed)]:[sha(changed)]).sort());

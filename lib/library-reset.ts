@@ -30,7 +30,7 @@ export async function clearLibrary(scope?:string,expectedLibrary?:Library,legacy
         await queueScoped(scope,target,read,local,0);
       }
     }
-    if(!scope || legacy)await saveLocalLibrary(empty,expected?.library || null,{checkpoint,clearOperation:true,...(scope?{resetScope:scope,clearFrom:baseline}:{})});
+    if(!scope || legacy)await saveLocalLibrary(empty,expected?.library || null,{checkpoint,clearOperation:true,...(scope?{guardScope:scope,clearFrom:baseline}:{})});
     const ids=new Set([...(expected?.library.projects || []),...baseline.projects].flatMap(projectMediaIds));
     void removeMediaFiles([...ids]).catch(()=>{});
   });

@@ -163,12 +163,12 @@ export function subscribeLocalChanges(listener: (kind?:"local"|"remote") => void
   return () => { channel?.close(); window.removeEventListener(channelName, receive); };
 }
 /** Metadata, outbox and cloud checkpoint are committed together with a stale-write guard. */
-export async function saveLocalLibrary(library: Library, expected: Library | null, options: { remote?: boolean; cloud?: unknown; files?: ReadonlyMap<string, Blob>; recover?: boolean; checkpoint?: unknown; clearOperation?: boolean; mediaAliases?: ReadonlyMap<string,string>; resetScope?:string; clearFrom?:Library } = {}) {
+export async function saveLocalLibrary(library: Library, expected: Library | null, options: { remote?: boolean; cloud?: unknown; files?: ReadonlyMap<string, Blob>; recover?: boolean; checkpoint?: unknown; clearOperation?: boolean; mediaAliases?: ReadonlyMap<string,string>; guardScope?:string; clearFrom?:Library } = {}) {
   const checked = parseLibrary(JSON.stringify(library));
   const sequence = await transaction(["meta", "sections", "ideas", "blocks", "outbox", "media"], "readwrite", async tx => {
     const previous = await snapshotIn(tx);
     if (!same(previous?.library ?? null, expected) && !options.recover) throw new Error(t("Библиотека изменилась в другой вкладке. Сохранение остановлено, чтобы не потерять изменения."));
-    if(options.resetScope && ((await request<{scope:string}[]>(tx.objectStore("meta").get("scoped-queue-v1"))) || []).some(row=>row.scope===options.resetScope))throw new Error(t("Сначала завершите синхронизацию и разрешите конфликты."));
+    if(options.guardScope && ((await request<{scope:string}[]>(tx.objectStore("meta").get("scoped-queue-v1"))) || []).some(row=>row.scope===options.guardScope))throw new Error(t("Сначала завершите синхронизацию и разрешите конфликты."));
     const cache: CacheState = await request(tx.objectStore("meta").get(cacheKey)) || {};
     for (const [id, blob] of options.files || []) { tx.objectStore("media").put(blob, id); delete cache[id]; }
     tx.objectStore("meta").put(cache,cacheKey);

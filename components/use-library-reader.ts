@@ -101,7 +101,8 @@ export function useLibraryReader(scope: string | undefined, enabled: boolean, ro
           setMain(previous=>cached?{...previous,page:cached,source:scope,items:sameKey && previous.page?.revision===cached.revision && previous.items.length>cached.ideas.length?previous.items:cached.ideas,cachePending:false,loading:true,error:cached.cloudError || ""}:{...previous,cachePending:false});
         }}), items = [...page.ideas];
         while (!cancelled && page.nextCursor && items.length < target) {
-          try{page = await loadReaderPage(scope,{sectionId,query,cursor:page.nextCursor},localOnly);items.push(...page.ideas);}catch(error){if(localOnly && error instanceof ReaderError && error.code==="CACHE_MISS")break;throw error;}
+          // Restore only already cached rows; a short page after deletion needs no network refill.
+          try{page = await loadReaderPage(scope,{sectionId,query,cursor:page.nextCursor},true);items.push(...page.ideas);}catch(error){if(error instanceof ReaderError && error.code==="CACHE_MISS")break;throw error;}
         }
         if (!cancelled) {navigation.current={scope,sections:page.sections,counts:page.counts};setMain({items,page,source:scope,localVersion:localSnapshotVersion,localOnly,loading:false,error:page.cloudError || ""});}
       } catch (error) {

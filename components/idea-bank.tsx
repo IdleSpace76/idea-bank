@@ -14,10 +14,13 @@ import { BackupControls } from "./backup-controls";
 import { CloudSyncControls } from "./cloud-sync-controls";
 import { useAutoSync } from "./use-auto-sync";
 import { useScopedSync } from "./use-scoped-sync";
-import { prepareTarget,queuePrepared,type ScopedPlan } from "@/lib/scoped-client";
+import { prepareTarget,queuePrepared,readTarget,type ScopedPlan } from "@/lib/scoped-client";
 import { readScopedIndex } from "@/lib/scoped-store";
 import type { ScopedEntry,SyncTarget } from "@/lib/scoped-types";
-import { assembleLibrary,entityKey,flattenLibrary } from "@/lib/entity-sync";
+import { assembleLibrary,entityKey,flattenLibrary,validateRead } from "@/lib/entity-sync";
+import {parseCloudMedia} from "@/lib/cloud-library";
+import type {BackupSource} from "@/lib/library-backup";
+import {retryCloudAccess} from "@/lib/cloud-access";
 import { useLibraryReader } from "./use-library-reader";
 import { useBlockDraft } from "./use-block-draft";
 import type { BlockDraft } from "@/lib/block-drafts";
@@ -126,10 +129,10 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
 
   useEffect(()=>{
     const target=loadMoreTarget.current;
-    if(!target || !reader.main.page?.nextCursor || reader.main.loading || reader.main.error)return;
-    const observer=new IntersectionObserver(entries=>{if(entries.some(entry=>entry.isIntersecting))void readerRef.current.loadMore();},{rootMargin:"300px"});
+    if(modal || draft || saving || backupBusy || !target || !reader.main.page?.nextCursor || reader.main.loading || reader.main.error)return;
+    const observer=new IntersectionObserver(entries=>{if(!modalRef.current && !savingRef.current && entries.some(entry=>entry.isIntersecting))void readerRef.current.loadMore();},{rootMargin:"300px"});
     observer.observe(target);return()=>observer.disconnect();
-  },[reader.main.page?.nextCursor,reader.main.loading,reader.main.error,route.screen,query]);
+  },[reader.main.page?.nextCursor,reader.main.loading,reader.main.error,route.screen,query,modal,draft,saving,backupBusy]);
 
   useEffect(() => {
     let cancelled = false;
@@ -273,7 +276,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
     try{await prepareEdit(target,false,false);reader.refresh();}catch(error){setStorageError(error instanceof Error?error.message:String(error));}
   }
   async function openModal(next: Modal) {
-    if(next.type==="new-section" || next.type==="new-project" || next.type==="delete-section") {
+    if(next.type==="new-section" || next.type==="new-project" || next.type==="delete-section" || next.type==="edit-project") {
       if(draft || savingRef.current || bridgeRef.current) {setStorageError(t("Сначала сохрани или отмени редактирование и дождись завершения других операций."));return;}
       setModal(next);return;
     }
@@ -446,6 +449,23 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
     }finally{bridgeRef.current=false;}
   }
 
+  /** Read a coherent backup snapshot without switching readers, seeding Example or activating legacy sync. */
+  async function prepareBackupSource():Promise<BackupSource> {
+    if(!cloudScope || legacySession)return {library:await readLocalLibrary()};
+    if(bridgeRef.current || draft)throw new Error(t("Сначала завершите синхронизацию и разрешите конфликты."));
+    bridgeRef.current=true;
+    try {
+      if(navigator.onLine===false)throw new Error(t("Для работы с облачной библиотекой нужно подключение к интернету."));
+      retryCloudAccess();
+      if((await readScopedIndex()).some(row=>row.scope===cloudScope))await scoped.controller?.check(false,undefined,true);
+      if((await readScopedIndex()).some(row=>row.scope===cloudScope))throw new Error(t("Сначала завершите синхронизацию и разрешите конфликты."));
+      const read=await readTarget({kind:"library",id:"all"}),parsed=validateRead(read,{},{});
+      if(Object.values(parsed.variants).some(values=>values.length!==1))throw new Error(t("Сначала завершите синхронизацию и разрешите конфликты."));
+      const files=Object.values(parsed.remote).filter(value=>!!value && "sha256" in value).map(parseCloudMedia);
+      return {library:assembleLibrary(parsed.remote),checkpoint:{version:2,scope:cloudScope,index:read.index,values:parsed.remote,recovery:parsed.recovery,files,syncedAt:new Date().toISOString()}};
+    }finally{bridgeRef.current=false;}
+  }
+
   async function removeProject(project: Project) {
     if (!await commit({ ...library, projects: library.projects.filter(p => p.id !== project.id) }, t("Идея удалена."))) return;
     setModal(null);
@@ -560,13 +580,20 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
         if(modal.type==="new-section" && !await prepareCreation({kind:"section",id:section.id}))return false;
         const success = await commit({ ...library, sections: modal.type === "edit-section" ? library.sections.map(s => s.id === section.id ? section : s) : [...library.sections, section] }, modal.type === "edit-section" ? t("Раздел обновлён.") : t("Раздел создан.")); if (success) setModal(null); return success;
       }} /> : modal.type === "new-project" || modal.type === "edit-project" ? <ProjectForm sections={library.sections} initialSectionId={modal.type === "new-project" ? modal.sectionId : modal.project.sectionId} project={modal.type === "edit-project" ? modal.project : undefined} onCancel={() => setModal(null)} onSave={async (values, coverFile) => {
-        const project: Project = modal.type === "edit-project" ? { ...modal.project, ...values, updatedAt: new Date().toISOString() } : { id: createId(), ...values, blocks: [], updatedAt: new Date().toISOString() };
+        let base=library,existing:Project|undefined;
+        if(modal.type==="edit-project") {
+          if(!coverFile && equal(ideaProperties(modal.project),values)){setModal(null);return true;}
+          base=await prepareEdit({kind:"idea",id:modal.project.id});existing=base.projects.find(idea=>idea.id===modal.project.id);
+          if(!existing)throw new Error(t("Идея не найдена."));
+          if(!equal(ideaProperties(existing),ideaProperties(modal.project))){reader.refresh();throw new Error(t("Идея изменилась. Откройте её заново перед сохранением."));}
+        }
+        const project: Project = existing ? { ...existing, ...values, updatedAt: new Date().toISOString() } : { id: createId(), ...values, blocks: [], updatedAt: new Date().toISOString() };
         if(modal.type==="new-project" && !await prepareCreation({kind:"idea",id:project.id},project.sectionId))return false;
         savingRef.current = true;
         try {
         if (coverFile && project.coverImage) await saveMediaFiles(new Map([[project.coverImage.id, coverFile]]));
         savingRef.current = false;
-        const success = await commit({ ...library, projects: modal.type === "edit-project" ? library.projects.map(p => p.id === project.id ? project : p) : [...library.projects, project] }, t("Идея сохранена в этом браузере."));
+        const success = await commit({ ...base, projects: modal.type === "edit-project" ? base.projects.map(p => p.id === project.id ? project : p) : [...base.projects, project] }, t("Идея сохранена в этом браузере."));
         if (success) { setModal(null); if (modal.type === "new-project") {reader.showLocalIdea(project);navigate({ screen: "project", id: project.id });} }
         return success;
         } finally { savingRef.current = false; }
@@ -574,7 +601,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
       : modal.type === "delete-section" ? <><p className="dialog-description">{t("Удалить «")}{modal.section.name}{t("»? Вместе с разделом будут удалены все его идеи (")}{projectCount(modal.section.id)}{t("). Это действие нельзя отменить.")}</p><div className="form-actions"><button className="secondary-button" onClick={() => setModal(null)}>{t("Отмена")}</button><button className="danger-button" onClick={() => removeSection(modal.section)}>{t("Удалить раздел")}</button></div></>
       : modal.type === "delete-project" ? <><p className="dialog-description">{t("Удалить «")}{modal.project.name}{t("» и все её текстовые блоки? Это действие нельзя отменить.")}</p><div className="form-actions"><button className="secondary-button" onClick={() => setModal(null)}>{t("Отмена")}</button><button className="danger-button" onClick={() => removeProject(modal.project)}>{t("Удалить идею")}</button></div></>
       : modal.type === "move-project" ? <div className="menu-options">{library.sections.map(s => <button disabled={s.id === modal.project.sectionId} key={s.id} onClick={async () => { const moved = { ...modal.project, sectionId: s.id, updatedAt: new Date().toISOString() }; if (await commit({ ...library, projects: library.projects.map(p => p.id === moved.id ? moved : p) }, t("Идея перенесена."))) setModal(null); }}><SectionSymbol icon={s.icon} /><span>{s.name}</span>{s.id === modal.project.sectionId && <Check />}</button>)}</div>
-      : <><div className="storage-info-icon"><Monitor /></div><p className="dialog-description">{t("Изменения сохраняются на устройстве и автоматически отправляются в подключённое облако. ZIP-копия позволяет сохранить отдельный архив библиотеки.")}</p><p className="dialog-description">{t("Облачное подключение доступно после входа владельца и настройки B2. Очистка данных сайта в браузере удалит локальную библиотеку и вложения.")}</p>{(legacySession ? automaticSync.controller : scoped.controller) && <CloudSyncControls controller={(legacySession ? automaticSync.controller : scoped.controller)!} view={syncView} library={fullLibrary || library} locked={!!draft || importingMedia || backupBusy || saving} readOnly={readOnly} />}<BackupControls onClear={clearBank} loadLibrary={cloudScope && !legacySession ? () => prepareFull(true,true) : undefined} scope={cloudScope} library={fullLibrary || library} locked={!!draft || saving || importingMedia || backupBusy || syncView.busy} readOnly={readOnly} onBusyChange={busy => { savingRef.current = busy; setBackupBusy(busy); }} onRestored={next => {
+      : <><div className="storage-info-icon"><Monitor /></div><p className="dialog-description">{t("Изменения сохраняются на устройстве и автоматически отправляются в подключённое облако. ZIP-копия позволяет сохранить отдельный архив библиотеки.")}</p><p className="dialog-description">{t("Облачное подключение доступно после входа владельца и настройки B2. Очистка данных сайта в браузере удалит локальную библиотеку и вложения.")}</p>{(legacySession ? automaticSync.controller : scoped.controller) && <CloudSyncControls controller={(legacySession ? automaticSync.controller : scoped.controller)!} view={syncView} library={fullLibrary || library} locked={!!draft || importingMedia || backupBusy || saving} readOnly={readOnly} />}<BackupControls onClear={clearBank} loadLibrary={cloudScope && !legacySession ? prepareBackupSource : undefined} scope={cloudScope} library={fullLibrary || library} locked={!!draft || saving || importingMedia || backupBusy || syncView.busy} readOnly={readOnly} onBusyChange={busy => { savingRef.current = busy; setBackupBusy(busy); }} onRestored={next => {
         setFullLibrary(next); fullRef.current=next; reader.refreshLocal(); setReadOnly(false); setStorageError(""); setDraft(null); setPendingMedia(new Map()); setMediaError(""); setQuery(""); setSidebarQuery(""); setExpandedSections({});
         setRoute({ screen: "home" }); history.replaceState(null, "", "#/"); setModal(null); setMessage(t("Библиотека обновлена.")); window.scrollTo({ top: 0, behavior: "instant" });
       }} /><button className="primary-button full-width" disabled={backupBusy} onClick={() => setModal(null)}>{t("Понятно")}</button></>}
@@ -609,6 +636,8 @@ function SectionForm({ section, onSave, onCancel }: { section?: Section; onSave:
   </form>;
 }
 
+const ideaProperties = ({name,description,sectionId,cover,coverImage}:Project) => ({name,description,sectionId,cover,coverImage});
+
 function ProjectForm({ sections, initialSectionId, project, onSave, onCancel }: { sections: Section[]; initialSectionId: string; project?: Project; onSave: (values: Pick<Project, "name" | "description" | "cover" | "coverImage" | "sectionId">, file?: File) => Promise<boolean>; onCancel: () => void }) {
   const { t } = useI18n();
   const [name, setName] = useState(project?.name || "");
@@ -624,7 +653,7 @@ function ProjectForm({ sections, initialSectionId, project, onSave, onCancel }: 
     e.preventDefault(); if (!name.trim() || submitting || readingCover) return;
     setSubmitting(true); setError("");
     try { if (!await onSave({ name: name.trim(), description: description.trim(), sectionId, cover, coverImage }, coverFile)) setError(t("Не удалось сохранить идею. Попробуй ещё раз.")); }
-    catch { setError(t("Не удалось сохранить обложку в браузере. Попробуй ещё раз или выбери готовую.")); }
+    catch (reason) { setError(t(reason instanceof Error ? reason.message : "Не удалось сохранить идею. Попробуй ещё раз.")); }
     finally { setSubmitting(false); }
   }}><fieldset disabled={submitting || readingCover}>
     <label className="field-label" htmlFor="new-project-name">{t("Название")}</label><input autoFocus id="new-project-name" required maxLength={100} pattern=".*\S.*" value={name} placeholder={t("Как называется твоя идея?")} onChange={e => setName(e.target.value)} />

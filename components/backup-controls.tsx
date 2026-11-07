@@ -6,7 +6,7 @@ import { loadExampleMedia } from "@/lib/example-media";
 import { useEffect, useRef, useState } from "react";
 import { Download, Eraser, FileArchive, LoaderCircle, RotateCcw, Upload, X } from "lucide-react";
 import { demoLibrary, STORAGE_KEY, type Library } from "@/lib/ideas";
-import { createLibraryBackup, readLibraryBackup,prepareLibraryImport,importLibraryBackup, type LibraryBackup,type LibraryImportPlan,type ImportChoice } from "@/lib/library-backup";
+import { createLibraryBackup, readLibraryBackup,prepareLibraryImport,importLibraryBackup, type LibraryBackup,type LibraryImportPlan,type ImportChoice,type BackupSource } from "@/lib/library-backup";
 import { clearLibrary } from "@/lib/library-reset";
 
 function download(blob: Blob, filename: string) {
@@ -21,7 +21,7 @@ async function prepareExampleBackup(): Promise<LibraryBackup> {
   return { library: structuredClone(demoLibrary), files, createdAt: demoLibrary.projects[0].updatedAt, totalBytes: new TextEncoder().encode(JSON.stringify(demoLibrary)).length + [...files.values()].reduce((sum, file) => sum + file.size, 0) };
 }
 
-export function BackupControls({ scope, library, locked, readOnly, onBusyChange, onRestored, loadLibrary, onClear }: { scope?: string; library: Library; locked: boolean; readOnly: boolean; onBusyChange: (busy: boolean) => void; onRestored: (library: Library) => void; loadLibrary?: () => Promise<Library>; onClear?:(expected:Library)=>Promise<Library> }) {
+export function BackupControls({ scope, library, locked, readOnly, onBusyChange, onRestored, loadLibrary, onClear }: { scope?: string; library: Library; locked: boolean; readOnly: boolean; onBusyChange: (busy: boolean) => void; onRestored: (library: Library) => void; loadLibrary?: () => Promise<BackupSource>; onClear?:(expected:Library)=>Promise<Library> }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false), [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -45,10 +45,10 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
   function begin(message: string) { if (active.current || locked) return false; active.current = true; setBusy(true); onBusyChange(true); setStatus(message); setError(""); return true; }
   function finish() { active.current = false; setBusy(false); onBusyChange(false); }
   async function exportZip() {
-    if (readOnly || !begin(t("Собираем библиотеку и медиа в архив…"))) return;
+    if (readOnly || !begin(t(scope?"Получаем данные библиотеки для ZIP…":"Собираем библиотеку и медиа в архив…"))) return;
     try {
-      const source=loadLibrary?await loadLibrary():library;
-      const blob = await createLibraryBackup(source,scope), now = new Date();
+      const source=loadLibrary?await loadLibrary():{library};
+      const blob = await createLibraryBackup(source.library,scope,setStatus), now = new Date();
       const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}`;
       download(blob, `idea-bank-${stamp}.zip`); setStatus(t("Архив подготовлен и передан браузеру для скачивания."));
     } catch (reason) { setStatus(""); setError(reason instanceof Error ? reason.message : t("Не удалось создать архив.")); }
@@ -59,7 +59,7 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
     setPreview(null);
     setImportPlan(null);setChoices({});
     setExamplePreview(false);
-    try { previewBase.current=structuredClone(loadLibrary?await loadLibrary():library);const backup=await readLibraryBackup(file);const plan=await prepareLibraryImport(backup,previewBase.current,scope);setPreview(backup);setImportPlan(plan); setStatus(t("Архив проверен. Текущая библиотека пока не изменена.")); }
+    try { const backup=await readLibraryBackup(file),source=loadLibrary?await loadLibrary():{library};previewBase.current=structuredClone(source.library);const plan=await prepareLibraryImport(backup,previewBase.current,scope,source.checkpoint);setPreview(backup);setImportPlan(plan); setStatus(t("Архив проверен. Текущая библиотека пока не изменена.")); }
     catch (reason) { setStatus(""); setError(reason instanceof Error ? reason.message : t("Не удалось прочитать архив.")); }
     finally { finish(); }
   }
@@ -79,8 +79,8 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
   async function previewExample() {
     if (!begin(t("Подготавливаем медиа…"))) return;
     try {
-      previewBase.current = structuredClone(loadLibrary?await loadLibrary():library);
-      const backup=await prepareExampleBackup();setImportPlan(await prepareLibraryImport(backup,previewBase.current,scope));setChoices({});setPreview(backup);
+      const source=loadLibrary?await loadLibrary():{library};previewBase.current = structuredClone(source.library);
+      const backup=await prepareExampleBackup();setImportPlan(await prepareLibraryImport(backup,previewBase.current,scope,source.checkpoint));setChoices({});setPreview(backup);
       setExamplePreview(true); setError(""); setStatus(t("Пример подготовлен. Текущая библиотека пока не изменена."));
     } catch { setPreview(null); setError(t("Не удалось загрузить медиа Example. Проверь соединение и попробуй ещё раз.")); }
     finally { finish(); }
@@ -97,11 +97,11 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
   return <section className="backup-controls" aria-labelledby="backup-title" aria-busy={busy}>
     <h3 id="backup-title">{t("Резервная копия")}</h3>
     <p>{t("ZIP содержит разделы, идеи, настройки блоков, обложки и все медиа. Поддерживается до 512 МБ данных на архив.")}</p>
-    {locked && <p className="backup-warning">{t("Сначала сохрани или отмени редактирование идеи, затем открой резервные копии.")}</p>}
+    {locked && !busy && <p className="backup-warning">{t("Сначала сохрани или отмени редактирование идеи, затем открой резервные копии.")}</p>}
     {readOnly && <p className="backup-warning">{t("Текущую библиотеку не удалось прочитать. Можно ")}<button type="button" className="inline-backup-button" disabled={busy || locked} onClick={exportOriginal}>{t("скачать исходные данные")}</button>.</p>}
     <div className="backup-buttons">
-      <button type="button" className="secondary-button" disabled={busy || locked || readOnly} onClick={() => { void exportZip(); }}><Download />{t("Экспортировать ZIP")}</button>
-      <label className={`secondary-button backup-upload ${busy || locked ? "is-disabled" : ""}`}><Upload />{t("Импортировать ZIP")}<input type="file" accept=".zip,application/zip,application/x-zip-compressed" aria-label={t("Выбрать архив библиотеки")} disabled={busy || locked} onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void inspect(file); }} /></label>
+      <button type="button" className="secondary-button" disabled={busy || locked || readOnly} onClick={() => { void exportZip(); }}><Upload />{t("Экспортировать ZIP")}</button>
+      <label className={`secondary-button backup-upload ${busy || locked ? "is-disabled" : ""}`}><Download />{t("Импортировать ZIP")}<input type="file" accept=".zip,application/zip,application/x-zip-compressed" aria-label={t("Выбрать архив библиотеки")} disabled={busy || locked} onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void inspect(file); }} /></label>
     </div>
     <div className="backup-buttons backup-reset-buttons">
       <button type="button" className="secondary-button" disabled={busy || locked} onClick={previewExample}><RotateCcw />{t("Загрузить Example")}</button>

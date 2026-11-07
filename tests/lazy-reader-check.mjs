@@ -245,7 +245,7 @@ try {
     const beforeDeleteConfirmation=calls.length;
     await page.getByRole("menuitem",{name:"Удалить раздел",exact:true}).click();
     await expect(page.getByRole("dialog",{name:"Удалить раздел?",exact:true})).toBeVisible();
-    assert.equal(calls.length,beforeDeleteConfirmation,"Opening section deletion confirmation performs no network request");
+    assert.equal(calls.length,beforeDeleteConfirmation,`Opening section deletion confirmation performs no network request: ${JSON.stringify(calls.slice(beforeDeleteConfirmation))}`);
     await page.getByRole("dialog").getByRole("button",{name:"Удалить раздел",exact:true}).click();
     await expect.poll(async()=> (await fixture.entities().catalog().readPage()).sections.length).toBe(1);
     // A B2 denial keeps cached bodies visible and suspends reads and queued writes together.

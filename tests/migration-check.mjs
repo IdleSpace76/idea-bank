@@ -4,7 +4,7 @@ import {spawn} from "node:child_process";
 import {createServer} from "node:net";
 import {setTimeout as delay} from "node:timers/promises";
 import {readFile,mkdir,writeFile} from "node:fs/promises";
-import {unzipSync,strFromU8} from "fflate";
+import {unzipSync,strFromU8,zipSync} from "fflate";
 import ts from "typescript";
 import {chromium,expect} from "@playwright/test";
 import {encode} from "next-auth/jwt";
@@ -26,7 +26,7 @@ try {
   browser=await chromium.launch({channel:"msedge",headless:true});
   const cookie="authjs.session-token",token=await encode({secret,salt:cookie,token:{sub:"12345",name:"Migration fixture"},maxAge:1800});
   async function device(fixture,viewport,local){
-    const context=await browser.newContext({viewport,isMobile:viewport.width<540,hasTouch:viewport.width<540}),calls=[],network={failFull:false};
+    const context=await browser.newContext({viewport,isMobile:viewport.width<540,hasTouch:viewport.width<540}),calls=[],network={failFull:false,hold:null,entered:null};
     await context.addCookies([{name:cookie,value:token,url:origin,httpOnly:true,sameSite:"Lax"}]);
     await context.addInitScript(({local})=>{localStorage.setItem("idea-bank.language","ru");if(local&&!localStorage.getItem("migration-fixture-seeded")){localStorage.setItem("idea-bank.library.v1",JSON.stringify(local));localStorage.setItem("migration-fixture-seeded","yes");}},{local});
     await context.route("**/api/**",async route=>{
@@ -39,7 +39,14 @@ try {
         if(url.pathname==="/api/catalog")return reply(await entities.catalog().readPage({limit:Number(url.searchParams.get("limit")||24),cursor:url.searchParams.get("cursor")||undefined,sectionId:url.searchParams.get("sectionId")||undefined,query:url.searchParams.get("q")||undefined}));
         if(url.pathname==="/api/catalog/media")return reply(await entities.catalog().readMedia(url.searchParams.get("id")));
         if(url.pathname.startsWith("/api/ideas/")){const result=await entities.catalog().readIdea(decodeURIComponent(url.pathname.split("/").pop()),request.headers()["if-none-match"]?.replaceAll('"',""));return result.notModified?route.fulfill({status:304,body:""}):reply(result);}
-        if(url.pathname==="/api/sync/scoped"){const body=request.postDataJSON();return reply(method==="POST"?await entities.readScoped(body.target,body.includeIdeas,body.includeMedia):await entities.saveScoped(body));}
+        if(url.pathname==="/api/sync/scoped"){
+          const body=request.postDataJSON();
+          if(method==="POST" && body.target.kind==="library"){
+            if(network.failFull)return reply({error:{message:"Full download unavailable"}},503);
+            if(network.hold){network.entered?.();await network.hold;network.hold=null;}
+          }
+          return reply(method==="POST"?await entities.readScoped(body.target,body.includeIdeas,body.includeMedia):await entities.saveScoped(body));
+        }
         if(url.pathname==="/api/sync"){
           if(method==="GET")return reply(await entities.status());
           if(method==="POST"){if(network.failFull)return reply({error:{message:"Full download unavailable"}},503);const body=request.postDataJSON();if((await entities.status()).requiresMigration&&!body.activate)return reply({error:{code:"MIGRATION_REQUIRED",message:"Требуется переход на новую синхронизацию."}},409);return reply(await entities.read(body.known));}
@@ -82,9 +89,49 @@ try {
     await page.getByRole("button",{name:"Экспортировать ZIP",exact:true}).click();await expect(page.locator(".backup-controls:not(.cloud-sync-controls) .backup-error")).toBeVisible({timeout:20000});
     assert.equal(unexpectedDownload,false);page.off("download",downloaded);network.failFull=false;await close(page);
     // Export is deliberately complete even though ordinary reads no longer materialize all ideas.
-    await open(page);const download=page.waitForEvent("download");await page.getByRole("button",{name:"Экспортировать ZIP",exact:true}).click();
-    const zip=unzipSync(await readFile(await (await download).path())),archived=JSON.parse(strFromU8(zip["library.json"]));
+    await open(page);const beforeExport=calls.length,download=page.waitForEvent("download");
+    void download.catch(()=>{});
+    let release,entered;network.hold=new Promise(resolve=>release=resolve);const waiting=new Promise(resolve=>entered=resolve);network.entered=entered;
+    await page.getByRole("button",{name:"Экспортировать ZIP",exact:true}).click();await waiting;
+    await expect(page.locator(".project-card > strong")).toHaveText("Saved idea");await expect(page.locator('main .library-loading,main .reader-state:has-text("Загружаем")')).toHaveCount(0);
+    assert.equal((await state(page)).layout,undefined,"Export does not initialize a full local replica or seed Example");release();
+    const zipBytes=await readFile(await (await download).path()),zip=unzipSync(zipBytes),archived=JSON.parse(strFromU8(zip["library.json"]));
+    assert.deepEqual(calls.slice(beforeExport).map(call=>`${call.method} ${call.path}`),["POST /api/sync/scoped"],"Export of text-only library is a single read, without sync mode/token/catalog reloads");
     assert.equal(archived.projects[0].blocks[0].text,"Keep this text");await close(page);
+    await expect.poll(async()=>(await state(page)).layout).toBeUndefined();
+    // Previewing ZIP and Example also leaves the current reader mounted and makes no cloud writes.
+    await open(page);
+    for(const action of ["zip","example"]){
+      const start=calls.length;let releasePreview,enteredPreview;
+      network.hold=new Promise(resolve=>releasePreview=resolve);const prepared=new Promise(resolve=>enteredPreview=resolve);network.entered=enteredPreview;
+      if(action==="zip")await page.getByLabel("Выбрать архив библиотеки",{exact:true}).setInputFiles({name:"library.zip",mimeType:"application/zip",buffer:zipBytes});
+      else await page.getByRole("button",{name:"Загрузить Example",exact:true}).click();
+      await prepared;await expect(page.locator(".project-card > strong")).toHaveText("Saved idea");await expect(page.locator('main .library-loading,main .reader-state:has-text("Загружаем")')).toHaveCount(0);releasePreview();
+      await expect(page.locator(".backup-preview")).toBeVisible();
+      assert.deepEqual(calls.slice(start).map(call=>`${call.method} ${call.path}`),["POST /api/sync/scoped"]);
+      assert.equal((await state(page)).layout,undefined,"Preview never switches to a full replica");
+      await page.getByRole("button",{name:action==="zip"?"Отмена импорта":"Отмена",exact:true}).click();
+    }
+    await close(page);
+    // A metadata form opens from its visible card without fetching the idea's blocks.
+    const beforeForm=calls.length;
+    await page.getByRole("button",{name:"Действия с идеей Saved idea",exact:true}).first().click();await page.getByRole("menuitem",{name:"Изменить",exact:true}).click();
+    await expect(page.getByRole("dialog",{name:"Изменить идею",exact:true})).toBeVisible();assert.equal(calls.length,beforeForm);
+    await page.getByRole("button",{name:"Сохранить",exact:true}).click();await expect(page.getByRole("dialog")).toHaveCount(0);assert.equal(calls.length,beforeForm,"Unchanged metadata closes without preparing or saving a cloud domain");
+    await page.getByRole("button",{name:"Действия с идеей Saved idea",exact:true}).first().click();await page.getByRole("menuitem",{name:"Изменить",exact:true}).click();
+    await page.getByLabel("Краткое описание",{exact:false}).fill("Edited from an uncached card");await page.getByRole("button",{name:"Сохранить",exact:true}).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);await expect.poll(async()=>(await old.entities().catalog().readIdea("saved")).idea.description).toBe("Edited from an uncached card");
+    assert.equal((await old.entities().catalog().readIdea("saved")).idea.blocks[0].text,"Keep this text","Cold metadata editing preserves the idea's unloaded blocks");await phase(page,"synced");
+    // Preview keeps the read checkpoint until an explicit import, even without a full local replica.
+    const importLibrary=structuredClone(archived);importLibrary.projects[0].blocks[0].text="Imported copy text";
+    const importJson=Buffer.from(JSON.stringify(importLibrary)),importManifest=JSON.parse(strFromU8(zip["manifest.json"]));importManifest.librarySha256=createHash("sha256").update(importJson).digest("hex");
+    const changedZip=Buffer.from(zipSync({...zip,"library.json":importJson,"manifest.json":Buffer.from(JSON.stringify(importManifest))}));
+    await open(page);await page.getByLabel("Выбрать архив библиотеки",{exact:true}).setInputFiles({name:"changed.zip",mimeType:"application/zip",buffer:changedZip});
+    await expect(page.locator(".backup-import-conflict")).toHaveCount(1);await page.getByRole("button",{name:"Сохранить обе",exact:true}).click();
+    await page.getByRole("button",{name:"Импортировать идеи",exact:true}).click();await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect.poll(async()=>(await old.entities().catalog().readPage()).total).toBe(2);await phase(page,"synced");
+    const imported=(await old.entities().catalog().readPage()).ideas.find(idea=>idea.variants[0]?.name==="Saved idea imported");
+    assert.ok(imported,"The imported copy receives its suffix in the cloud too");assert.equal((await old.entities().catalog().readIdea(imported.id)).idea.blocks[0].text,"Imported copy text");
     await expect.poll(async()=>(await state(page)).layout).toBeUndefined();
     // Reset is an explicit whole-library change; reload never resurrects the old backup.
     await open(page);const beforeReset=calls.length,resetRequests=[];
@@ -107,6 +154,14 @@ try {
     bulk.projects.at(-1).blocks[0].media=[{id:file.id,name:"never-download.png",kind:"image",mime:file.mime,size:file.size}];
     await many.entities().save({operationId:randomUUID(),heads:[],changes:Object.entries(schema.flattenLibrary(bulk,[file])).map(([key,value])=>({key,value,base:[]}))});
     const bulkClient=await device(many,viewport);await phase(bulkClient.page,"synced");await open(bulkClient.page);
+    const beforeBulkExport=bulkClient.calls.length,bulkDownload=bulkClient.page.waitForEvent("download");
+    void bulkDownload.catch(()=>{});
+    await bulkClient.page.getByRole("button",{name:"Экспортировать ZIP",exact:true}).click();
+    const bulkZip=unzipSync(await readFile(await (await bulkDownload).path())),bulkManifest=JSON.parse(strFromU8(bulkZip["manifest.json"]));
+    assert.equal(JSON.parse(strFromU8(bulkZip["library.json"])).projects.length,40,"Export includes ideas absent from the visible first page");
+    assert.equal(Buffer.compare(Buffer.from(bulkZip[bulkManifest.media[0].path]),bytes),0,"Export downloads missing originals and preserves their bytes");
+    assert.deepEqual(bulkClient.calls.slice(beforeBulkExport).map(call=>`${call.method} ${call.path}`),["POST /api/sync/scoped","POST /api/reader/batch"],"Export reads one full snapshot and one missing-media ticket packet");
+    await bulkClient.page.evaluate(async id=>{const {removeMediaFiles}=await import("/__local_fixture__/media-store.js");await removeMediaFiles([id]);},file.id);
     const bulkRequests=[],track=request=>bulkRequests.push(new URL(request.url()).pathname);bulkClient.page.on("request",track);
     const beforeBulkReset=bulkClient.calls.length;
     await bulkClient.page.getByRole("button",{name:"Очистить голову",exact:true}).click();
