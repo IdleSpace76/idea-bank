@@ -25,6 +25,17 @@ function remove(key: string) {
 /** Test/maintenance hook. Does not delete or modify anything in B2. */
 export function clearStorageReadCache() { generation++; entries.clear(); pending.clear(); bytes = 0; }
 
+/** Call only after a successful immutable write or validated read. Never remember missing values. */
+export function rememberStorageValue(storage: B2Storage, key: string, value: unknown) {
+  if (value === null || value === undefined) return;
+  const id = identity(storage,key), json = JSON.stringify(value), size = Buffer.byteLength(json);
+  if (size > STORAGE_READ_CACHE_BYTES) return;
+  for (const [key,entry] of entries) if (entry.expires <= Date.now()) remove(key);
+  remove(id);
+  while (entries.size && (bytes + size > STORAGE_READ_CACHE_BYTES || entries.size >= STORAGE_READ_CACHE_ENTRIES)) remove(entries.keys().next().value!);
+  entries.set(id,{json,bytes:size,expires:Date.now()+STORAGE_READ_CACHE_TTL}); bytes += size;
+}
+
 /** Positive immutable JSON only. Mutable pointers, missing objects and errors must stay uncached. */
 export async function cachedStorageRead<T>(storage: B2Storage, key: string, load: () => Promise<T>): Promise<T> {
   const id = identity(storage, key), now = Date.now(), saved = entries.get(id);
@@ -38,15 +49,7 @@ export async function cachedStorageRead<T>(storage: B2Storage, key: string, load
   const current = generation;
   const operation = (async () => {
     const value = await load();
-    if (value !== null && value !== undefined && current === generation) {
-      const json = JSON.stringify(value), size = Buffer.byteLength(json);
-      if (size <= STORAGE_READ_CACHE_BYTES) {
-        for (const [key,entry] of entries) if (entry.expires <= Date.now()) remove(key);
-        remove(id);
-        while (entries.size && (bytes + size > STORAGE_READ_CACHE_BYTES || entries.size >= STORAGE_READ_CACHE_ENTRIES)) remove(entries.keys().next().value!);
-        entries.set(id,{json,bytes:size,expires:Date.now()+STORAGE_READ_CACHE_TTL}); bytes += size;
-      }
-    }
+    if (current === generation) rememberStorageValue(storage,key,value);
     return value;
   })();
   // Bound concurrent bookkeeping too; excess distinct reads simply bypass coalescing.

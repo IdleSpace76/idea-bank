@@ -10,7 +10,7 @@ const source=await readFile(new URL("../lib/storage-read-cache.ts",import.meta.u
 const compiled=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
 const exports={};let now=0;
 vm.runInNewContext(compiled,{exports,Buffer,structuredClone,Date:{now:()=>now},require:name=>{assert.equal(name,"node:crypto");return {createHash};}});
-const {cachedStorageRead:read,clearStorageReadCache:clear,STORAGE_READ_CACHE_TTL:ttl,STORAGE_READ_CACHE_ENTRIES:limit}=exports;
+const {cachedStorageRead:read,rememberStorageValue:remember,clearStorageReadCache:clear,STORAGE_READ_CACHE_TTL:ttl,STORAGE_READ_CACHE_ENTRIES:limit}=exports;
 const owner={settings:{endpoint:"fixture",bucket:"one",keyId:"key",applicationKey:"secret"},prefix:"data"};
 let calls=0,release;
 const concurrent=Array.from({length:20},()=>read(owner,"same",async()=>{calls++;await new Promise(resolve=>release=resolve);return {nested:{value:1}};}));
@@ -38,6 +38,10 @@ clear();
 let fresh=0;const held=read(owner,"clear-race",async()=>{await new Promise(resolve=>release=resolve);return "old";});
 clear();release();await held;
 assert.equal(await read(owner,"clear-race",async()=>{fresh++;return "new";}),"new");assert.equal(fresh,1);
+clear();calls=0;
+const written={nested:{value:3}};remember(owner,"written",written);written.nested.value=99;
+assert.equal((await read(owner,"written",load)).nested.value,3,"A confirmed write is readable without GET and is isolated from caller mutation");assert.equal(calls,0);
+remember(owner,"not-written",null);await read(owner,"not-written",load);assert.equal(calls,1,"Absent values must not be remembered as successful writes");
 console.log("Storage cache bounds: coalescing, caller isolation, credential isolation, expiry, LRU, bytes, missing objects and failures passed.");
 
 const f=memoryStorage(),{flattenLibrary,entityKey}=schema;

@@ -21,7 +21,7 @@ import { assembleLibrary,entityKey,flattenLibrary } from "@/lib/entity-sync";
 import { useLibraryReader } from "./use-library-reader";
 import { useBlockDraft } from "./use-block-draft";
 import type { BlockDraft } from "@/lib/block-drafts";
-import { applyVisibleEdit } from "@/lib/library-edit";
+import { applyVisibleEdit, preserveUnchangedIdeaDates } from "@/lib/library-edit";
 import { SyncStatus } from "./sync-status";
 import { equal } from "@/lib/entity-sync";
 import { initializeLocalLibrary, readLocalLibrary, readMeta, readOutbox, retireCloudReplica, saveLocalLibrary, subscribeLocalChanges } from "@/lib/library-store";
@@ -30,7 +30,7 @@ import { BlockEditor, ProjectBlocks } from "./project-blocks";
 import { describeMediaFile, mediaIds, projectMediaIds, removeMediaFiles, saveMediaFiles } from "@/lib/media-store";
 import { MediaScope } from "./media-scope";
 import { useMediaSource } from "@/lib/use-media-source";
-import { coverNames, createId, demoLibrary, readRoute, routeHash, type Cover, type IdeaSummary, type Library, type MediaAsset, type Project, type Route, type Section, type SectionIcon } from "@/lib/ideas";
+import { coverNames, createId, demoLibrary, readRoute, routeHash, summarizeIdea, type Cover, type IdeaSummary, type Library, type MediaAsset, type Project, type Route, type Section, type SectionIcon } from "@/lib/ideas";
 
 type Modal =
   | { type: "new-section" }
@@ -117,7 +117,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
     },syncBlocked);
   const scoped=useScopedSync(cloudScope,ready&&!legacySession&&!readOnly,
     ()=>ready&&!readOnly&&!draft&&(bridgeRef.current || !savingRef.current&&!importingRef.current&&!importingMedia&&!backupBusy&&(!modalRef.current||modalRef.current.type==="storage-info")),
-    localOnly=>localOnly?reader.refreshLocal():reader.refresh(),syncBlocked);
+    (localOnly,safety,revisions)=>localOnly?reader.refreshLocal():reader.refresh(safety,revisions),syncBlocked);
   const reading=reader.networkLoading;
   const readError=reader.cloudError || reader.main.error || reader.detail?.error || "";
   const syncView=legacySession ? automaticSync.view : {...scoped.view,busy:scoped.view.busy || reading,phase:reader.authRequired?"auth" as const:["conflict","auth","retry","error","unavailable"].includes(scoped.view.phase)?scoped.view.phase:reader.offline?"offline" as const:reader.cloudError?"unavailable" as const:reading||scoped.view.busy?"syncing" as const:readError?"error" as const:scoped.view.phase,error:scoped.view.error || readError};
@@ -251,12 +251,14 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
       throw error;
     } finally {bridgeRef.current=false;savingRef.current=false;setSaving(false);}
   }
-  async function prepareEdit(target:SyncTarget,localBlocks=false):Promise<Library> {
+  async function prepareEdit(target:SyncTarget,localBlocks=false,reuseCache=true):Promise<Library> {
     if(!cloudScope || legacySession)return prepareFull();
     if(draft || savingRef.current || bridgeRef.current)throw new Error(t("Сначала сохрани или отмени редактирование и дождись завершения других операций."));
     savingRef.current=true;bridgeRef.current=true;setSaving(true);
     try {
-      const result=await prepareTarget(cloudScope,target,localBlocks?currentProject:undefined,localBlocks?reader.detail?.editBase:undefined);
+      const visible=target.kind==="idea"?library.projects.find(idea=>idea.id===target.id):target.kind==="section"?library.sections.find(section=>section.id===target.id):undefined;
+      const snapshot=target.kind==="idea" && visible && !localBlocks?summarizeIdea(visible as Project):visible;
+      const result=await prepareTarget(cloudScope,target,reuseCache?snapshot:undefined,reuseCache && target.kind==="idea" && reader.detail?.idea?.id===target.id?reader.detail.editBase:undefined);
       // A just-created section may still be waiting in this device's durable queue.
       for(const row of await readScopedIndex())if(row.scope===cloudScope && row.section && !result.entry.local[entityKey("section",row.section.id)])result.entry.local[entityKey("section",row.section.id)]=row.section;
       const selected=assembleLibrary(result.entry.local);
@@ -267,7 +269,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
     }finally{savingRef.current=false;bridgeRef.current=false;setSaving(false);}
   }
   async function reviewConflict(target:SyncTarget) {
-    try{await prepareEdit(target);reader.refresh();}catch(error){setStorageError(error instanceof Error?error.message:String(error));}
+    try{await prepareEdit(target,false,false);reader.refresh();}catch(error){setStorageError(error instanceof Error?error.message:String(error));}
   }
   async function openModal(next: Modal) {
     if(next.type==="new-section" || next.type==="new-project") {
@@ -310,7 +312,8 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
     savingRef.current = true; setSaving(true);
     try {
       const base=fullRef.current || await readLocalLibrary();
-      const complete=applyVisibleEdit(base,library,next);
+      const complete=preserveUnchangedIdeaDates(base,applyVisibleEdit(base,library,next));
+      if(equal(base,complete)){setStorageError("");setMessage(notice);return true;}
       if(cloudScope && !legacySession && preparedEntry.current) {
         preparedEntry.current=await queuePrepared(preparedEntry.current,complete);
         setFullLibrary(complete);fullRef.current=complete;reader.refreshLocal();setStorageError("");setMessage(notice);return true;
@@ -411,7 +414,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
   async function restoreDraft(confirmed=false) {
     const record=draftReview?.record || blockDraft.recovery;if(!record || readOnly || savingRef.current)return;
     try{
-      const full=await prepareEdit({kind:"idea",id:record.id}),current=full.projects.find(idea=>idea.id===record.id);
+      const full=await prepareEdit({kind:"idea",id:record.id},false,false),current=full.projects.find(idea=>idea.id===record.id);
       savingRef.current=true;setSaving(true);
       if(!current)throw new Error(t("Идея не найдена."));
       const changed=!equal(record.base.blocks,current.blocks);
@@ -498,7 +501,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
         </section>}
         {route.screen==="project" && blockDraft.error && <p className="backup-error" role="alert">{t("Не удалось сохранить или прочитать черновик.")} {t(blockDraft.error)}</p>}
         {draft && <p className="draft-status" role="status">{t(blockDraft.status==="saved"?"Черновик сохранён на устройстве":blockDraft.status==="waiting"?"Сохраняем черновик…":"Изменения отправятся в библиотеку после сохранения идеи.")}</p>}
-        {(route.screen==="project" && !draft && !prepared && !reader.detail?.idea) ? <div className="reader-state" role="status"><p>{t(reader.detail?.error || "Загружаем идею…")}</p>{reader.detail?.conflict && <button className="primary-button" onClick={()=>void reviewConflict(reader.detail!.conflict!)}>{t("Разрешить конфликт")}</button>}<button className="secondary-button" onClick={reader.refresh}>{t("Повторить загрузку")}</button><button className="back-button" onClick={()=>navigate({screen:"home"})}>{t("Библиотека")}</button></div> : missing && !reader.main.loading ? <div className="empty-state"><Folder /><h1 ref={heading} tabIndex={-1}>{t("Здесь пока ничего нет")}</h1><p>{t("Возможно, эта идея или раздел уже удалены.")}</p><button className="primary-button" onClick={() => navigate({ screen: "home" })}>{t("К библиотеке")}</button></div> : route.screen === "project" && currentProject ? <>
+        {(route.screen==="project" && !draft && !prepared && !reader.detail?.idea) ? <div className="reader-state" role="status"><p>{t(reader.detail?.error || "Загружаем идею…")}</p>{reader.detail?.conflict && <button className="primary-button" onClick={()=>void reviewConflict(reader.detail!.conflict!)}>{t("Разрешить конфликт")}</button>}<button className="secondary-button" onClick={() => reader.refresh()}>{t("Повторить загрузку")}</button><button className="back-button" onClick={()=>navigate({screen:"home"})}>{t("Библиотека")}</button></div> : missing && !reader.main.loading ? <div className="empty-state"><Folder /><h1 ref={heading} tabIndex={-1}>{t("Здесь пока ничего нет")}</h1><p>{t("Возможно, эта идея или раздел уже удалены.")}</p><button className="primary-button" onClick={() => navigate({ screen: "home" })}>{t("К библиотеке")}</button></div> : route.screen === "project" && currentProject ? <>
           <div className="project-toolbar"><button className="back-button" onClick={() => navigate({ screen: "section", id: currentProject.sectionId })}><ArrowLeft />{currentSection?.name}</button><div className="project-actions">{!draft && <><button className="edit-button page-action-button" disabled={readOnly} onClick={() => void openModal({ type: "edit-project", project: currentProject })}><Pencil />{t("Изменить")}</button><DropdownMenu label={t("Действия с идеей")} disabled={readOnly} items={[
             { label: t("Перенести в раздел"), icon: <FolderInput />, onSelect: () => void openModal({ type: "move-project", project: currentProject }) },
             { label: t("Удалить идею"), icon: <Trash2 />, danger: true, onSelect: () => void openModal({ type: "delete-project", project: currentProject }) },
@@ -520,7 +523,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
 
           {route.screen === "home" && <section className="sections-area" aria-labelledby="sections-heading"><div className="section-heading"><h2 id="sections-heading">{t("Мои разделы")}</h2></div><div className="section-grid">{library.sections.map(s => <div className="section-card" key={s.id}><button className="section-open" onClick={() => navigate({ screen: "section", id: s.id })}><span className="section-symbol"><SectionSymbol icon={s.icon} /></span><span><strong>{s.name}</strong><small>{t("Идей: ")}{projectCount(s.id)}</small></span></button>{sectionMenu(s, t("Действия с разделом {0}", { 0: s.name }))}</div>)}<button className="new-section-card" disabled={readOnly} onClick={() => void openModal({ type: "new-section" })}><Plus /><span>{t("Создать раздел")}</span></button></div></section>}
 
-          <section className={`projects-area ${route.screen === "home" && !query ? "home-projects" : ""}`} aria-label={t("Идеи")}><div className="projects-toolbar"><label className="search-field idea-search"><Search /><input type="search" aria-label={t("Найти идею")} placeholder={t("Найти идею")} value={query} onChange={e => setQuery(e.target.value)} /></label><span>{t("Идей: ")}{reader.main.page?.total || 0}</span></div>{reader.main.loading && !reader.main.cachePending && !reader.main.items.length && <p className="reader-state" role="status">{t("Загружаем идеи…")}</p>}{reader.main.error && <div className="reader-state" role="alert"><p>{t(reader.main.error)}</p>{reader.main.conflict && <button className="primary-button" onClick={()=>void reviewConflict(reader.main.conflict!)}>{t("Разрешить конфликт")}</button>}<button className="secondary-button" onClick={reader.refresh}>{t("Повторить загрузку")}</button></div>}{projectCards()}{!visibleProjects.length && !reader.main.loading && !reader.main.error && <div className="empty-inline"><p>{query ? t("Таких идей пока нет. Попробуй другое название.") : t("Место для твоей следующей идеи.")}</p></div>}</section>
+          <section className={`projects-area ${route.screen === "home" && !query ? "home-projects" : ""}`} aria-label={t("Идеи")}><div className="projects-toolbar"><label className="search-field idea-search"><Search /><input type="search" aria-label={t("Найти идею")} placeholder={t("Найти идею")} value={query} onChange={e => setQuery(e.target.value)} /></label><span>{t("Идей: ")}{reader.main.page?.total || 0}</span></div>{reader.main.loading && !reader.main.cachePending && !reader.main.items.length && <p className="reader-state" role="status">{t("Загружаем идеи…")}</p>}{reader.main.error && <div className="reader-state" role="alert"><p>{t(reader.main.error)}</p>{reader.main.conflict && <button className="primary-button" onClick={()=>void reviewConflict(reader.main.conflict!)}>{t("Разрешить конфликт")}</button>}<button className="secondary-button" onClick={() => reader.refresh()}>{t("Повторить загрузку")}</button></div>}{projectCards()}{!visibleProjects.length && !reader.main.loading && !reader.main.error && <div className="empty-inline"><p>{query ? t("Таких идей пока нет. Попробуй другое название.") : t("Место для твоей следующей идеи.")}</p></div>}</section>
           {route.screen === "home" && !!recentProjects.length && !query && <section className="recent-project">{!!recentProjects.length && <h2>{t("Последние идеи")}</h2>}<div className="recent-project-list">{recentProjects.map(project => <div className="recent-project-item" key={project.id}><button onClick={() => navigate({ screen: "project", id: project.id })}><CoverArt cover={project.cover} image={project.coverImage} title={project.name} small /><span><strong>{project.name}</strong><small>{library.sections.find(s => s.id === project.sectionId)?.name}</small></span></button>{projectCardMenu(project)}</div>)}</div></section>}
 
         </>}
@@ -560,7 +563,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
       : modal.type === "move-project" ? <div className="menu-options">{library.sections.map(s => <button disabled={s.id === modal.project.sectionId} key={s.id} onClick={async () => { const moved = { ...modal.project, sectionId: s.id, updatedAt: new Date().toISOString() }; if (await commit({ ...library, projects: library.projects.map(p => p.id === moved.id ? moved : p) }, t("Идея перенесена."))) setModal(null); }}><SectionSymbol icon={s.icon} /><span>{s.name}</span>{s.id === modal.project.sectionId && <Check />}</button>)}</div>
       : <><div className="storage-info-icon"><Monitor /></div><p className="dialog-description">{t("Изменения сохраняются на устройстве и автоматически отправляются в подключённое облако. ZIP-копия позволяет сохранить отдельный архив библиотеки.")}</p><p className="dialog-description">{t("Облачное подключение доступно после входа владельца и настройки B2. Очистка данных сайта в браузере удалит локальную библиотеку и вложения.")}</p>{(legacySession ? automaticSync.controller : scoped.controller) && <CloudSyncControls controller={(legacySession ? automaticSync.controller : scoped.controller)!} view={syncView} library={fullLibrary || library} locked={!!draft || importingMedia || backupBusy || saving} readOnly={readOnly} />}<BackupControls loadLibrary={cloudScope && !legacySession ? () => prepareFull(true,true) : undefined} scope={cloudScope} library={fullLibrary || library} locked={!!draft || saving || importingMedia || backupBusy || syncView.busy} readOnly={readOnly} onBusyChange={busy => { savingRef.current = busy; setBackupBusy(busy); }} onRestored={next => {
         setFullLibrary(next); fullRef.current=next; reader.refresh(); setReadOnly(false); setStorageError(""); setDraft(null); setPendingMedia(new Map()); setMediaError(""); setQuery(""); setSidebarQuery(""); setExpandedSections({});
-        setRoute({ screen: "home" }); history.replaceState(null, "", "#/"); setModal(null); setMessage(t("Библиотека и медиа восстановлены из архива.")); window.scrollTo({ top: 0, behavior: "instant" });
+        setRoute({ screen: "home" }); history.replaceState(null, "", "#/"); setModal(null); setMessage(t("Библиотека обновлена.")); window.scrollTo({ top: 0, behavior: "instant" });
       }} /><button className="primary-button full-width" disabled={backupBusy} onClick={() => setModal(null)}>{t("Понятно")}</button></>}
     </Dialog>}
   </div></MediaScope.Provider>;

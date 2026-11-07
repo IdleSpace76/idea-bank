@@ -62,7 +62,7 @@ try {
           const body=request.postDataJSON();
           if(request.method()==="POST"){if(heldScopedRead)await heldScopedRead;return reply(await fixture.entities().readScoped(body.target,body.includeIdeas,body.includeMedia));}
           if(heldScopedWrite)await heldScopedWrite;
-          batches.push(body);return reply(await fixture.entities().save(body));
+          batches.push(body);return reply(await fixture.entities().saveScoped(body));
         }
         if(url.pathname==="/api/catalog"){if(heldCatalogRead)await heldCatalogRead;return reply(await fixture.entities().catalog().readPage({limit:Number(url.searchParams.get("limit")||24),cursor:url.searchParams.get("cursor")||undefined,query:url.searchParams.get("q")||undefined,sectionId:url.searchParams.get("sectionId")||undefined}));}
         if(url.pathname==="/api/catalog/media")return reply(await fixture.entities().catalog().readMedia(url.searchParams.get("id")));

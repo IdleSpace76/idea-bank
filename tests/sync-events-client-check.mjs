@@ -6,6 +6,7 @@ import ts from "typescript";
 // Exercise lifecycle/auth failures without a real account, waiting minutes or exposing SDK errors.
 const original = new Map(["window", "document", "navigator", "fetch", "setTimeout", "clearTimeout", "loadFixture"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 const realTimeout = globalThis.setTimeout;
+const realNow=Date.now;let timeOffset=0;Date.now=()=>realNow()+timeOffset;
 const timers = new Map(), instances = [];
 let nextTimer = 0, requests = 0, credentialMode = "enabled", lastRequest;
 const channelName = "idea-bank:sync:" + "a".repeat(64);
@@ -66,10 +67,15 @@ try {
   assert.equal(revisions.length, received, "Late messages from a closed connection are ignored");
   doc.visibilityState = "visible"; doc.dispatchEvent(new Event("visibilitychange")); await flush();
   assert.equal(instances.length, 2); assert.equal(ready.at(-1), true);
+  const cachedTokenRequests=requests;
   nav.onLine = false; win.dispatchEvent(new Event("offline"));
   assert.ok(instances.at(-1).closed); assert.equal(ready.at(-1), false); assert.equal(timers.size, 0);
   nav.onLine = true; win.dispatchEvent(new Event("online")); await flush();
   assert.equal(instances.length, 3); assert.equal(ready.at(-1), true);
+  assert.equal(requests,cachedTokenRequests,"A valid token survives hidden/offline reconnects without another API call");
+  timeOffset+=900000;
+  doc.visibilityState="hidden";doc.dispatchEvent(new Event("visibilitychange"));doc.visibilityState="visible";doc.dispatchEvent(new Event("visibilitychange"));await flush();
+  assert.equal(requests,cachedTokenRequests+1,"An expired token is fetched again");
   instances.at(-1).connection.emit("failed");
   assert.equal(ready.at(-1), false); assert.ok([...timers.values()].some(timer => timer.delay === 60000));
   client.stop(); assert.equal(timers.size, 0);
@@ -95,6 +101,7 @@ try {
   assert.equal(requests, stoppedRequests, "Stopped clients remove all event listeners");
   console.log("Sync event client checks passed: subscription readiness, token renewal, scoped auth, hidden/offline lifecycle, provider failure and cleanup.");
 } finally {
+  Date.now=realNow;
   client?.stop();
   for (const [key, descriptor] of original) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; }
 }

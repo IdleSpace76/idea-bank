@@ -1,6 +1,15 @@
 import { equal } from "./entity-sync";
 import { parseLibrary, type Library, type Project } from "./ideas";
 
+/** Saving an unchanged form is not a new idea revision. Preserve dates before queueing. */
+export function preserveUnchangedIdeaDates(base: Library, next: Library): Library {
+  const previous=new Map(base.projects.map(idea=>[idea.id,idea]));
+  return {...next,projects:next.projects.map(idea=>{
+    const old=previous.get(idea.id);
+    return old && equal({...old,updatedAt:undefined},{...idea,updatedAt:undefined}) ? {...idea,updatedAt:old.updatedAt} : idea;
+  })};
+}
+
 /** Apply an explicit UI edit to a complete baseline; absent, unloaded ideas are never deletions. */
 export function applyVisibleEdit(base: Library, before: Library, next: Library): Library {
   const result=structuredClone(base);

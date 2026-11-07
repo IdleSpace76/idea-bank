@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState,useSyncExternalStore 
 import { loadReaderIdea, loadReaderPage,syncReader,readerActivity,subscribeReaderActivity, ReaderError, type ReaderPage } from "@/lib/library-reader";
 import { subscribeLocalChanges } from "@/lib/library-store";
 import { subscribeScoped,scopedBatchActive } from "@/lib/scoped-store";
+import { subscribeReaderChecks } from "@/lib/shared-reader-check";
 import type { SyncTarget,ScopedRead } from "@/lib/scoped-types";
 import type { IdeaSummary, Library, Project, Route, Section } from "@/lib/ideas";
 
@@ -25,6 +26,8 @@ export function useLibraryReader(scope: string | undefined, enabled: boolean, ro
   },[scope]);
   const [refreshState,setRefreshState] = useState({id:0,localOnly:false}), [online,setOnline] = useState(true);
   const refreshId=refreshState.id,refreshRequest=useRef<Promise<void>|null>(null);
+  const refreshSafety=useRef(false),urgentRefresh=useRef(false);
+  const queuedRevisions=useRef(new Set<string>());
   const invalidating=useRef<Promise<unknown>>(Promise.resolve());
   const lastMainRefresh=useRef<{scope?:string;id:number}>({id:-1}),lastDetailRefresh=useRef<{scope?:string;id:number}>({id:-1});
   const state = useRef({main,sidebar,search,locked}); state.current = {main,sidebar,search,locked};
@@ -34,15 +37,19 @@ export function useLibraryReader(scope: string | undefined, enabled: boolean, ro
     if(refreshTimer.current!==null)return;
     refreshTimer.current=setTimeout(()=>{refreshTimer.current=null;setRefreshState(value=>({id:value.id+1,localOnly:true}));},200);
   },[]);
-  const refresh=useCallback(()=>{
+  const refresh:(safety?:boolean,revisions?:string[])=>void=useCallback((safety=false,revisions)=>{
+    if(refreshRequest.current && revisions?.length)for(const id of revisions)queuedRevisions.current.add(id);
+    while(queuedRevisions.current.size>512)queuedRevisions.current.delete(queuedRevisions.current.values().next().value!);
+    if(refreshRequest.current && refreshSafety.current && !safety && !revisions?.length)urgentRefresh.current=true;
     if(scope && !refreshRequest.current) {
-      const pending=syncReader(scope).catch(error=>{setMain(previous=>({...previous,error:reason(error),cloudError:error instanceof ReaderError && error.code==="UNAVAILABLE"?error.message:undefined,conflict:error instanceof ReaderError?error.target:undefined}));}).finally(()=>{if(refreshRequest.current===pending)refreshRequest.current=null;});
+      refreshSafety.current=safety || !!revisions?.length;
+      const pending=syncReader(scope,safety,revisions).catch(error=>{setMain(previous=>({...previous,error:reason(error),cloudError:error instanceof ReaderError && error.code==="UNAVAILABLE"?error.message:undefined,conflict:error instanceof ReaderError?error.target:undefined}));}).finally(()=>{if(refreshRequest.current===pending){refreshRequest.current=null;const queued=[...queuedRevisions.current];queuedRevisions.current.clear();if(urgentRefresh.current){urgentRefresh.current=false;refresh();}else if(queued.length)refresh(false,queued);}});
       refreshRequest.current=pending;invalidating.current=pending;
     }
     scheduleRefresh();
   },[scope,scheduleRefresh]);
   const refreshLocal=useCallback(()=>scheduleRefresh(),[scheduleRefresh]);
-  useEffect(()=>()=>{if(refreshTimer.current!==null){clearTimeout(refreshTimer.current);refreshTimer.current=null;}refreshRequest.current=null;},[scope]);
+  useEffect(()=>()=>{if(refreshTimer.current!==null){clearTimeout(refreshTimer.current);refreshTimer.current=null;}refreshRequest.current=null;urgentRefresh.current=false;queuedRevisions.current.clear();},[scope]);
   const sectionId = route.screen === "section" ? route.id : undefined;
   const ideaId = route.screen === "project" ? route.id : undefined;
   const mainKey = JSON.stringify([scope,sectionId,query]), lastKey = useRef("");
@@ -57,7 +64,7 @@ export function useLibraryReader(scope: string | undefined, enabled: boolean, ro
     const wake = () => {
       setOnline(navigator.onLine !== false);
       if(document.visibilityState==="hidden" || navigator.onLine===false || Date.now()-lastWake.current<600000)return;
-      lastWake.current=Date.now();refresh();
+      lastWake.current=Date.now();refresh(true);
     };
     const reconnect=()=>{setOnline(navigator.onLine!==false);lastWake.current=Date.now();refresh();};
     const visible=()=>{if(document.visibilityState==="visible")wake();};
@@ -67,7 +74,8 @@ export function useLibraryReader(scope: string | undefined, enabled: boolean, ro
     const localChange=(external=false)=>{localVersion.current++;if(!state.current.locked && (!scope || external || !scopedBatchActive(scope)))scheduleRefresh();};
     const stop = subscribeLocalChanges(()=>localChange());
     const stopScoped=subscribeScoped((value,external)=>{if(value===scope)localChange(external);});
-    return () => {stop();stopScoped();window.removeEventListener("online",reconnect);window.removeEventListener("offline",wake);window.removeEventListener("focus",wake);document.removeEventListener("visibilitychange",visible);};
+    const stopVerified=scope?subscribeReaderChecks(value=>{if(value===scope)scheduleRefresh();}):()=>{};
+    return () => {stop();stopScoped();stopVerified();window.removeEventListener("online",reconnect);window.removeEventListener("offline",wake);window.removeEventListener("focus",wake);document.removeEventListener("visibilitychange",visible);};
   },[refresh,scheduleRefresh,scope]);
 
   useEffect(() => {

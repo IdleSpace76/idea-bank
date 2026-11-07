@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { S3Client, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, type HeadObjectCommandOutput } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { MAX_CLOUD_JSON_BYTES, StorageError, parseCloudMedia, parseCloudSave, parseCloudSnapshot, revisionPattern, type CloudMedia, type CloudSnapshot } from "./cloud-library";
 
@@ -20,6 +20,8 @@ function missing(error: unknown) { const e = error as { name?: string; $metadata
 /** Immutable snapshot graph preserves concurrent saves, including across serverless instances. */
 export class B2Storage {
   readonly client: S3Client;
+  // storageEndpoint creates a separate instance for each authenticated HTTP request.
+  private mediaChecks = new Map<string, Promise<HeadObjectCommandOutput>>();
   constructor(readonly settings: B2Settings, readonly prefix = "idea-bank/v1") {
     if (!/^[a-zA-Z0-9/-]+$/.test(prefix) || prefix.includes("..")) throw new Error("Invalid storage prefix");
     this.client = new S3Client({ endpoint: settings.endpoint, region: settings.region, credentials: { accessKeyId: settings.keyId, secretAccessKey: settings.applicationKey }, forcePathStyle: true, requestChecksumCalculation: "WHEN_REQUIRED", responseChecksumValidation: "WHEN_REQUIRED", maxAttempts: 2, requestHandler: { connectionTimeout: 5000, requestTimeout: 20000 } });
@@ -104,9 +106,15 @@ export class B2Storage {
 
   async verifyMedia(value: unknown) {
     const file = parseCloudMedia(value);
+    const key = this.mediaKey(file);
+    let check = this.mediaChecks.get(key);
+    if (!check) {
+      check = this.client.send(new HeadObjectCommand({ Bucket: this.settings.bucket, Key: key }));
+      if (this.mediaChecks.size < 10000) this.mediaChecks.set(key,check);
+    }
     let head;
-    try { head = await this.client.send(new HeadObjectCommand({ Bucket: this.settings.bucket, Key: this.mediaKey(file) })); }
-    catch (error) { if (missing(error)) throw new StorageError(422, "MEDIA_MISSING", "Сначала загрузи все вложения в B2."); throw error; }
+    try { head = await check; }
+    catch (error) { if (this.mediaChecks.get(key) === check) this.mediaChecks.delete(key); if (missing(error)) throw new StorageError(422, "MEDIA_MISSING", "Сначала загрузи все вложения в B2."); throw error; }
     if (head.ContentLength !== file.size || head.ContentType !== file.mime || head.Metadata?.sha256 !== file.sha256 || head.ETag?.replaceAll('"', "") !== file.md5) throw new StorageError(422, "MEDIA_MISMATCH", "Размер или контрольная сумма вложения не совпадают.");
     return file;
   }
@@ -135,7 +143,8 @@ export class B2Storage {
     throw new StorageError(409, "CLIENT_UPGRADE_REQUIRED", "Обнови приложение: используется новая синхронизация.");
   }
   async signDownload(value: CloudMedia) {
-    const file = await this.verifyMedia(value);
+    // Membership is checked by the caller. The actual GET is size/hash-verified by the client.
+    const file = parseCloudMedia(value);
     const url = await getSignedUrl(this.client, new GetObjectCommand({ Bucket: this.settings.bucket, Key: this.mediaKey(file), ResponseContentDisposition: "attachment", ResponseContentType: file.mime }), { expiresIn: 300 });
     return { url, expiresIn: 300, media: file };
   }

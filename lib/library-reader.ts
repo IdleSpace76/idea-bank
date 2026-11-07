@@ -10,6 +10,8 @@ import {transaction,request as dbRequest} from "./local-database";
 import {readerPageKey,readerCursor,readerCursorOffset,type ReaderBatchRequest,type ReaderBatchResponse} from "./reader-batch-types";
 import type {ScopedSummary} from "./scoped-types";
 import { cloudFetch, CloudAccessError,cloudAccessProblem } from "./cloud-access";
+import { noteReaderCheck, runSharedReaderCheck, runSharedReaderEvents } from "./shared-reader-check";
+import { markReaderStale } from "./reader-cache";
 
 export type ReaderPage = { sections: Section[]; ideas: IdeaSummary[]; total: number; counts: Record<string,number>; revision: string; nextCursor: string | null; offline: boolean; uninitialized: boolean; cloudError?: string;applied?:Record<string,string[]> };
 export type ReaderIdea = { idea: Project; version: string; offline: boolean; editBase?:ScopedRead; cloudError?: string };
@@ -42,7 +44,7 @@ function checkedPage(value: unknown): ReaderPage {
   return { sections:library.sections,ideas:library.projects.map(summarizeIdea),total:page.total,counts:page.sectionCounts || {},revision:page.revision,nextCursor:page.nextCursor,offline:false,uninitialized:page.uninitialized === true };
 }
 
-type BatchWaiter={page?:ReaderQuery;body?:string;media?:string;resolve:(batch:ReaderBatchResponse)=>void;reject:(error:unknown)=>void};
+type BatchWaiter={page?:ReaderQuery;body?:string;media?:string;observe?:string[];resolve:(batch:ReaderBatchResponse)=>void;reject:(error:unknown)=>void};
 const batchQueue=new Map<string,BatchWaiter[]>(),batchRequests=new Map<string,Promise<ReaderBatchResponse>>();
 const activity=new Map<string,number>(),activityListeners=new Set<()=>void>();
 export const readerActivity=(scope?:string)=>scope?(activity.get(scope) || 0):0;
@@ -136,29 +138,37 @@ async function executeBatch(scope:string,waiters:BatchWaiter[]) {
       const inventory:ReaderInventory=mediaOnly?{epoch:0,fresh:true,pages:[],ideas:[]}:await readReaderInventory(scope);
       const body:ReaderBatchRequest={since:inventory.heads,pages:[...new Map(waiters.filter(value=>value.page).map(value=>[readerPageKey(value.page),value.page!])).values()],bodies:[...new Set([...waiters.flatMap(value=>value.body?[value.body]:[]),...inventory.ideas.filter(value=>!value.value.editBase).map(value=>value.id)])],watch:inventory.ideas.map(value=>value.id),media:[...new Set(waiters.flatMap(value=>value.media?[value.media]:[]))],sidebar:!inventory.heads && waiters.some(value=>value.page && !value.page.cursor)};
       if(mediaOnly)body.mediaOnly=true;
+      const observe=[...new Set(waiters.flatMap(waiter=>waiter.observe || []))].slice(0,512);if(observe.length)body.observe=observe;
       let response:Response;
       try {if(navigator.onLine===false)throw new TypeError("Offline");response=await cloudFetch("/api/reader/batch",{method:"POST",headers:{"Content-Type":"application/json"},credentials:"same-origin",cache:"no-store",body:JSON.stringify(body),signal:AbortSignal.timeout(65000)});}
       catch(error){throw error instanceof CloudAccessError && error.status?new ReaderError("UNAVAILABLE",error.message):new TypeError("Offline");}
       const data=await response.json();
       if(!response.ok)throw new ReaderError(response.status>=500?"UNAVAILABLE":data?.error?.code || "READ_FAILED",data?.error?.message || "Не удалось загрузить данные.");
-      if(mediaOnly && Array.isArray(data?.media) || !mediaOnly && await applyBatch(scope,data,inventory)){for(const waiter of waiters)waiter.resolve(data);return;}
+      if(mediaOnly && Array.isArray(data?.media) || !mediaOnly && await applyBatch(scope,data,inventory)){if(!mediaOnly)await noteReaderCheck(scope).catch(()=>{});for(const waiter of waiters)waiter.resolve(data);return;}
     }
     throw new ReaderError("STALE_CATALOG","Локальные данные изменились во время загрузки. Повторите попытку.");
   } catch(error){for(const waiter of waiters)waiter.reject(error);}
   finally{changeReaderActivity(scope,-1);}
 }
-function readerBatch(scope:string,page?:ReaderQuery,body?:string,media?:string) {
-  const key=JSON.stringify([scope,page?readerPageKey(page):null,body,media]);
+function readerBatch(scope:string,page?:ReaderQuery,body?:string,media?:string,observe?:string[]) {
+  const key=JSON.stringify([scope,page?readerPageKey(page):null,body,media,observe]);
   const existing=batchRequests.get(key);if(existing)return existing;
   const promise=new Promise<ReaderBatchResponse>((resolve,reject)=>{
     let pending=batchQueue.get(scope);
     if(!pending){pending=[];batchQueue.set(scope,pending);setTimeout(()=>{const batch=batchQueue.get(scope)!;batchQueue.delete(scope);void executeBatch(scope,batch);},8);}
-    pending.push({page,body,media,resolve,reject});
+    pending.push({page,body,media,observe,resolve,reject});
   }).finally(()=>batchRequests.delete(key));
   batchRequests.set(key,promise);return promise;
 }
 /** Events, reconnect and the safety timer all share the same incremental packet path. */
-export async function syncReader(scope:string){await readerBatch(scope);}
+export async function syncReader(scope:string,safety=false,revisions?:string[]){
+  if(revisions?.length)await runSharedReaderEvents(scope,revisions,async()=>{
+    await markReaderStale(scope);
+    const batch=await readerBatch(scope,undefined,undefined,undefined,revisions);
+    return Array.isArray(batch.observed)?batch.observed:[];
+  });
+  else if(safety)await runSharedReaderCheck(scope,async()=>{await readerBatch(scope);});else await readerBatch(scope);
+}
 export async function loadReaderMedia(scope:string,id:string) {
   const key=JSON.stringify([scope,id]),saved=mediaTickets.get(key);
   if(saved && saved.expires>Date.now()+15000)return saved.download;

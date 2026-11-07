@@ -88,8 +88,8 @@ try {
     await expect.poll(async()=>(await state(page)).layout).toBeUndefined();
     // Reset is an explicit whole-library change; reload never resurrects the old backup.
     await open(page);await page.getByRole("button",{name:"Очистить голову",exact:true}).click();await page.locator(".reset-library-confirm").click();
-    await expect(page.locator(".project-card > strong")).toHaveText("Example");await phase(page,"synced");
-    await page.reload();await expect(page.locator(".project-card > strong")).toHaveText("Example");
+    await expect(page.locator(".project-card")).toHaveCount(0);await phase(page,"synced");
+    await page.reload();await expect(page.locator(".project-card")).toHaveCount(0);
     await context.close();
 
     // A local personal library never overwrites an existing cloud without the owner choosing a source.

@@ -13,22 +13,27 @@ export class SyncEventsClient {
   private connecting = false;
   private ready = false;
   private disabledUntil = 0;
+  private savedCredentials: Credentials | null = null;
   constructor(private callbacks: Callbacks) {}
   private setReady(ready: boolean) {
     if (this.ready === ready) return;
     this.ready = ready; this.callbacks.onConnection(ready);
   }
   private active(generation: number) { return !this.stopped && generation === this.generation; }
-  private async credentials(): Promise<Credentials | null> {
+  private async credentials(renew = false): Promise<Credentials | null> {
+    if(!renew && this.savedCredentials && this.savedCredentials.expiresAt>Date.now()+30000)return this.savedCredentials;
+    const generation=this.generation;
     const request = new AbortController(); this.request = request;
     const timeout = setTimeout(() => request.abort(), 8000);
     try {
       const response = await fetch("/api/sync/events/token", { method: "POST", credentials: "same-origin", cache: "no-store", signal: request.signal });
-      if (!response.ok) throw new Error("Sync notifications unavailable");
+      if(!this.active(generation))return null;
+      if (!response.ok) {this.savedCredentials=null;throw new Error("Sync notifications unavailable");}
       const value = await response.json();
-      if (value?.enabled === false) return null;
+      if(!this.active(generation))return null;
+      if (value?.enabled === false) {this.savedCredentials=null;return null;}
       if (value?.enabled !== true || typeof value.channel !== "string" || !/^idea-bank:sync:[a-f0-9]{64}$/.test(value.channel) || typeof value.token !== "string" || !value.token || typeof value.expiresAt !== "number" || value.expiresAt <= Date.now()) throw new Error("Invalid notification credentials");
-      return value;
+      this.savedCredentials=value;return value;
     } finally { clearTimeout(timeout); if (this.request === request) this.request = null; }
   }
   private scheduleRetry(delay = 60000) {
@@ -49,8 +54,8 @@ export class SyncEventsClient {
       let first: Credentials | null = initial;
       const client = new Realtime({ autoConnect: false, logLevel: 0, authCallback: (_params, callback) => {
         void (async () => {
-          const credentials = first || await this.credentials(); first = null;
-          if (!this.active(generation) || !credentials || credentials.channel !== initial.channel) throw new Error("Sync notifications unavailable");
+          const credentials = first || await this.credentials(true); first = null;
+          if (!this.active(generation) || !credentials || credentials.channel !== initial.channel) {this.savedCredentials=null;throw new Error("Sync notifications unavailable");}
           callback(null, credentials.token);
         })().catch(() => callback("Sync notifications unavailable", null));
       } });
@@ -60,6 +65,7 @@ export class SyncEventsClient {
         if (!this.active(generation)) return;
         this.setReady(client.connection.state === "connected" && channel.state === "attached");
         if (client.connection.state === "failed" || channel.state === "failed") {
+          this.savedCredentials=null;
           this.suspend(); this.scheduleRetry();
         }
       };
@@ -92,7 +98,7 @@ export class SyncEventsClient {
     this.wake();
   }
   stop() {
-    this.stopped = true; this.suspend();
+    this.stopped = true; this.savedCredentials=null; this.suspend();
     document.removeEventListener("visibilitychange", this.wake);
     window.removeEventListener("online", this.wake); window.removeEventListener("offline", this.wake);
   }

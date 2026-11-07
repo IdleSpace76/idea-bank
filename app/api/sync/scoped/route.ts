@@ -13,6 +13,6 @@ export async function POST(request: Request) {
 export async function PUT(request: Request) {
   return storageEndpoint(request,true,async storage=>{
     const input=await readStorageBody(request);
-    return saveAndNotify(()=>new EntityStorage(storage).save(input),process.env,fetch,(input as {changes?:unknown})?.changes);
+    return saveAndNotify(()=>new EntityStorage(storage).saveScoped(input),process.env,fetch,(input as {changes?:unknown})?.changes);
   });
 }

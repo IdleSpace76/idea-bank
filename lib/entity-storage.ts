@@ -5,7 +5,7 @@ import { MAX_CLOUD_JSON_BYTES, StorageError, invalid, parseCloudSnapshot, revisi
 import { canonicalLibrary, contentId, entityKey, equal, flattenLibrary, keyParts, parseEntity, stable, type EntityChange, type EntityValue, type EntityIndex, type EntityRead, type EntityVersion } from "./entity-sync";
 import { CatalogStorage } from "./catalog-storage";
 import type { ScopedRead, SyncTarget } from "./scoped-types";
-import { cachedStorageRead } from "./storage-read-cache";
+import { cachedStorageRead, rememberStorageValue } from "./storage-read-cache";
 import type {ReaderBatchRequest,ReaderBatchResponse,ReaderQuery} from "./reader-batch-types";
 import {readerPageKey} from "./reader-batch-types";
 
@@ -18,6 +18,7 @@ export class EntityStorage {
   readonly prefix: string;
   private manifests = new Map<string, Manifest>();
   private legacyParents = new Map<string,string[]>();
+  private catalogGraph?: Graph;
   constructor(readonly storage: B2Storage) { this.prefix = `${storage.prefix}/sync-v2`; }
   catalog() { return new CatalogStorage(this); }
   private versionKey(key: string, revision: string) { return `${this.prefix}/records/${hash(key)}/${revision}.json`; }
@@ -33,9 +34,14 @@ export class EntityStorage {
     const body = stable(value);
     if (Buffer.byteLength(body) > MAX_CLOUD_JSON_BYTES) throw new StorageError(413,"LIBRARY_TOO_LARGE","Облачная запись превышает 3 МиБ.");
     const existing = await this.getJson(key);
-    if (existing !== null) { if (!equal(existing,value)) throw new StorageError(409,"OPERATION_REUSED","Идентификатор операции уже использован."); return; }
+    if (existing !== null) { if (!equal(existing,value)) throw new StorageError(409,"OPERATION_REUSED","Идентификатор операции уже использован."); this.rememberWritten(key,value);return; }
     // The key and exact body are deterministic for a request, including simultaneous retries.
     await this.storage.client.send(new PutObjectCommand({ Bucket: this.storage.settings.bucket, Key: key, Body: body, ContentType: "application/json", ContentMD5: createHash("md5").update(body).digest("base64") }));
+    this.rememberWritten(key,value);
+  }
+  /** A checked immutable write can satisfy the post-commit read without another GET. */
+  private rememberWritten(key:string,value:unknown) {
+    if(key.startsWith(`${this.prefix}/indexes/`) || key.startsWith(`${this.prefix}/records/`))rememberStorageValue(this.storage,key,value);
   }
   async graph(): Promise<Graph> {
     const graph: Graph = new Map(), prefix = `${this.prefix}/indexes/`;
@@ -65,11 +71,20 @@ export class EntityStorage {
         for (const parent of graph.get(current)!.parents) stack.push([parent,false]);
       }
     }
-    return graph;
+    this.catalogGraph=graph;return graph;
+  }
+  /** A ready-catalog hint is usable only when every head is in the current causal history. */
+  canReuseCatalog(basis: unknown, heads: string[]): basis is string[] {
+    const graph=this.catalogGraph;
+    return !!graph && uuids(basis) && !equal(basis,heads) && heads.every(id=>graph.has(id)) && basis.every(id=>graph.has(id) && heads.some(head=>this.ancestor(id,head,graph)));
   }
   private heads(graph: Graph) {
     const parents = new Set([...graph.values()].flatMap(v => v.parents)), candidates = [...graph.keys()].filter(id => !parents.has(id));
     return candidates.filter(id => !candidates.some(other => id !== other && this.ancestor(id,other,graph))).sort();
+  }
+  private catalogParents(heads: string[], graph: Graph) {
+    const parents = [...new Set(heads.flatMap(head => graph.get(head)?.parents || []))];
+    return parents.filter(id => !parents.some(other => other !== id && this.ancestor(id,other,graph))).sort();
   }
   private legacyAncestor(older: string, newer: string) {
     const pending=[newer], seen=new Set<string>();
@@ -84,9 +99,15 @@ export class EntityStorage {
   private async manifest(id: string, graph: Graph): Promise<Manifest> {
     if (this.manifests.has(id)) return this.manifests.get(id)!;
     const entry = graph.get(id); if (!entry) throw new StorageError(409,"STALE_INDEX","Облачный индекс изменился. Повтори синхронизацию.");
-    const value = await this.getJson(entry.key) as Manifest | null;
-    if (!value || value.format !== "idea-bank-index" || value.version !== 2 || value.revision !== id || value.legacy !== entry.legacy || !equal(value.parents, entry.parents) || !value.index || typeof value.index !== "object" || Array.isArray(value.index) || !/^[a-f0-9]{64}$/.test(value.digest)) throw new StorageError(502,"INVALID_HISTORY","Индекс изменений повреждён.");
-    for (const [key, revisions] of Object.entries(value.index)) { keyParts(key); if (!uuids(revisions) || !revisions.length || revisions.some(r => !this.ancestor(r,id,graph))) throw new StorageError(502,"INVALID_HISTORY","Неверные версии в индексе."); }
+    const value = await cachedStorageRead(this.storage,entry.key,async()=>{
+      const value=await this.getJson(entry.key) as Manifest | null;
+      if (!value || value.format !== "idea-bank-index" || value.version !== 2 || value.revision !== id || value.legacy !== entry.legacy || !equal(value.parents, entry.parents) || !value.index || typeof value.index !== "object" || Array.isArray(value.index) || !/^[a-f0-9]{64}$/.test(value.digest)) throw new StorageError(502,"INVALID_HISTORY","Индекс изменений повреждён.");
+      for(const [key,revisions] of Object.entries(value.index)){keyParts(key);if(!uuids(revisions) || !revisions.length)throw new StorageError(502,"INVALID_HISTORY","Неверные версии в индексе.");}
+      return value;
+    });
+    // Cached physical bytes do not replace validation against the freshly listed graph.
+    if(value.revision!==id || value.legacy!==entry.legacy || !equal(value.parents,entry.parents))throw new StorageError(502,"INVALID_HISTORY","Индекс изменений повреждён.");
+    for (const revisions of Object.values(value.index)) if(revisions.some(r=>!this.ancestor(r,id,graph)))throw new StorageError(502,"INVALID_HISTORY","Неверные версии в индексе.");
     this.manifests.set(id,value); return value;
   }
   private async index(heads: string[], graph: Graph): Promise<EntityIndex> {
@@ -178,7 +199,7 @@ export class EntityStorage {
     return { heads, index, records };
   }
   /** Build a read projection once per frontier, without downloading block bodies. */
-  async catalogIndex(frontier?: string[]): Promise<{ heads: string[]; index: EntityIndex }> {
+  async catalogIndex(frontier?: string[]): Promise<{ heads: string[]; index: EntityIndex; parents: string[] }> {
     const legacy = await this.storage.listRevisions();
     this.legacyParents = new Map([...legacy.revisions].map(([id,entry]) => [id,entry.parents]));
     const graph = await this.graph();
@@ -186,15 +207,21 @@ export class EntityStorage {
     const candidates = frontier ?? this.heads(graph);
     if (!uuids(candidates) || candidates.some(id => !graph.has(id))) throw new StorageError(409,"STALE_INDEX","Облачный индекс изменился.");
     const heads = candidates.filter(id => !candidates.some(other => id !== other && this.ancestor(id,other,graph))).sort();
-    return { heads, index: await this.index(heads,graph) };
+    return { heads, index: await this.index(heads,graph), parents: this.catalogParents(heads,graph) };
   }
   /** Read one edit/conflict domain. Unrelated idea bodies never leave storage. */
   async readReaderBatch(input:unknown):Promise<ReaderBatchResponse> {
     if(!input || typeof input!=="object")return invalid();
     const request=input as ReaderBatchRequest;
     if(request.mediaOnly!==undefined && typeof request.mediaOnly!=="boolean")return invalid();
+    if(request.observe!==undefined && (!Array.isArray(request.observe) || request.observe.length>512 || request.observe.some(id=>typeof id!=="string" || !revisionPattern.test(id)) || new Set(request.observe).size!==request.observe.length))return invalid();
     const ids=(value:unknown)=>Array.isArray(value) && value.length<=64 && value.every(id=>typeof id==="string" && id.length>0 && id.length<=200) && new Set(value).size===value.length;
     if(request.since!==undefined && !uuids(request.since) || request.pages!==undefined && (!Array.isArray(request.pages) || request.pages.length>64 || request.pages.some(page=>!page || typeof page!=="object")) || request.bodies!==undefined && !ids(request.bodies) || request.watch!==undefined && !ids(request.watch) || request.media!==undefined && (!ids(request.media) || request.media.some(id=>!(/^[a-f0-9]{64}-[a-f0-9]{32}$/).test(id))) || request.sidebar!==undefined && typeof request.sidebar!=="boolean")return invalid();
+    if(request.mediaOnly && !request.pages?.length && !request.bodies?.length && !request.watch?.length && !request.sidebar && !request.observe?.length) {
+      const tickets=await this.catalog().readMediaBatch(request.media || []);
+      if(tickets)return {heads:tickets.heads,revision:hash(stable(tickets.heads)),reset:false,pages:[],changes:{index:{},records:[],previous:[]},bodies:[],media:tickets.media};
+      // A save may precede catalog publication. Fall back to the authoritative index, never build a catalog just to sign a file.
+    }
     const legacy=await this.storage.listRevisions();this.legacyParents=new Map([...legacy.revisions].map(([id,entry])=>[id,entry.parents]));
     const graph=await this.graph();
     if(legacy.revisions.size && !graph.size)throw new StorageError(409,"MIGRATION_REQUIRED","Требуется переход на новую синхронизацию.");
@@ -229,7 +256,7 @@ export class EntityStorage {
       const read={target,heads,index:Object.fromEntries([...keys].filter(key=>index[key]).map(key=>[key,index[key]])),records:await load(keys,index)};
       bodies.push({id,read});
     }
-    const catalog=new CatalogStorage(this,{heads,index}),queries=new Map<string,ReaderQuery>();
+    const catalog=new CatalogStorage(this,{heads,index,parents:this.catalogParents(heads,graph)}),queries=new Map<string,ReaderQuery>();
     for(const page of request.pages || [])queries.set(readerPageKey(page),page);
     if(reset && !queries.size && !request.mediaOnly)queries.set("limit=24",{});
     const pages:ReaderBatchResponse["pages"]=[];
@@ -246,12 +273,15 @@ export class EntityStorage {
       if(record.value)media.push({id,download:await this.storage.signDownload(record.value as CloudMedia)});
       else media.push({id,error:{code:"NOT_FOUND",message:"Вложение не найдено."}});
     }
-    return {heads,revision:hash(stable(heads)),reset,pages,changes,bodies,media};
+    return {heads,revision:hash(stable(heads)),reset,pages,changes,bodies,media,...(request.observe?{observed:request.observe.filter(id=>graph.has(id) && heads.some(head=>this.ancestor(id,head,graph)))}:{})};
   }
   /** Read one edit/conflict domain. Unrelated idea bodies never leave storage. */
-  async readScoped(target: SyncTarget, includeIdeas: string[] = [],includeMedia:string[]=[]): Promise<ScopedRead> {
+  private validateTarget(target: SyncTarget, includeIdeas: string[], includeMedia: string[]) {
     if (!target || !["idea","section","section-tree"].includes(target.kind) || typeof target.id!=="string" || !target.id || target.id.length>200 || !Array.isArray(includeIdeas) || includeIdeas.length>10000 || includeIdeas.some(id=>typeof id!=="string" || !id || id.length>200)) return invalid();
     if(!Array.isArray(includeMedia) || includeMedia.length>10000 || includeMedia.some(id=>typeof id!=="string" || !/^[a-f0-9]{64}-[a-f0-9]{32}$/.test(id)))return invalid();
+  }
+  async readScoped(target: SyncTarget, includeIdeas: string[] = [],includeMedia:string[]=[]): Promise<ScopedRead> {
+    this.validateTarget(target,includeIdeas,includeMedia);
     const source=await this.catalogIndex(), selected=new Set<string>(), records=new Map<string,EntityVersion>();
     const load=async(key:string)=>{
       selected.add(key);
@@ -287,6 +317,13 @@ export class EntityStorage {
     }
     for(const id of includeMedia)await load(entityKey("media",id));
     return {target,heads:source.heads,index:Object.fromEntries([...selected].filter(key=>source.index[key]).map(key=>[key,source.index[key]])),records:[...records.values()]};
+  }
+  /** Return a fresh post-commit domain in the PUT response; old clients still get revision only. */
+  async saveScoped(input: unknown): Promise<{revision:string;read?:ScopedRead}> {
+    const readBack=(input as {readBack?:{target:SyncTarget;includeIdeas?:string[]}} | null)?.readBack;
+    if(readBack!==undefined)this.validateTarget(readBack?.target,readBack?.includeIdeas===undefined?[]:readBack.includeIdeas,[]);
+    const saved=await this.save(input);
+    return readBack ? {...saved,read:await this.readScoped(readBack.target,readBack.includeIdeas)} : saved;
   }
   async save(input: unknown): Promise<{ revision: string }> {
     if (!input || typeof input !== "object") return invalid();

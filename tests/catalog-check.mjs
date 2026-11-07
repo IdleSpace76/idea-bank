@@ -182,3 +182,4 @@ try {
   console.log("Catalog recovery check passed: committed-save retries repair publication even when parent cleanup fails.");
 } finally { interrupted.storage.client.destroy(); }
 await import("./storage-read-cache-check.mjs");
+await import("./storage-request-budget-check.mjs");

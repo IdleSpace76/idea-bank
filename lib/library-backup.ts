@@ -1,8 +1,9 @@
 import { translate as t } from "./i18n";
 import { readLocalSnapshot, saveLocalLibrary } from "./library-store";
 import { zip, unzip, type Zippable } from "fflate";
-import { createId, parseLibrary, type Library, type MediaAsset } from "./ideas";
-import { projectMediaIds, removeMediaFiles } from "./media-store";
+import { createId, parseLibrary, type Library, type MediaAsset,type Project } from "./ideas";
+import {stable} from "./entity-sync";
+import { projectMediaIds, removeMediaFiles,readMediaFile } from "./media-store";
 
 import { getMediaFile } from "./media-cache";
 
@@ -10,7 +11,9 @@ export const MAX_BACKUP_BYTES = 512 * 1024 * 1024;
 const MAX_ENTRIES = 10000;
 type ManifestFile = { id: string; path: string; size: number; sha256: string };
 type Manifest = { format: "idea-bank-backup"; version: 1; createdAt: string; librarySha256: string; media: ManifestFile[] };
-export type LibraryBackup = { library: Library; files: ReadonlyMap<string, Blob>; createdAt: string; totalBytes: number };
+export type LibraryBackup = { library: Library; files: ReadonlyMap<string, Blob>; createdAt: string; totalBytes: number;hashes?:ReadonlyMap<string,string> };
+export type ImportChoice="current"|"archive"|"both";
+export type LibraryImportPlan={backup:LibraryBackup;base:Library;conflicts:{id:string;current:Project;incoming:Project}[];added:number;unchanged:number;sectionsAdded:number;copies:Map<string,string>;same:Set<string>;currentHashes:Map<string,string>;archiveHashes:Map<string,string>};
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const digest = async (bytes: Uint8Array) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>))).map(value => value.toString(16).padStart(2, "0")).join("");
 const validHash = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
@@ -92,7 +95,87 @@ export async function readLibraryBackup(file: Blob): Promise<LibraryBackup> {
     if (await digest(bytes) !== entry.sha256) throw new Error(t("Проверка целостности файла «{0}» не пройдена.", { 0: asset.name }));
     files.set(entry.id, new Blob([bytes as Uint8Array<ArrayBuffer>], { type: asset.mime })); paths.add(entry.path); totalBytes += bytes.length;
   }
-  return { library, files, createdAt: manifest.createdAt, totalBytes };
+  return { library, files, createdAt: manifest.createdAt, totalBytes,hashes:new Map(manifest.media.map(entry=>[entry.id,entry.sha256])) };
+}
+
+async function assetHash(asset:MediaAsset,hashes:Map<string,string>,file:()=>Promise<Blob|undefined>) {
+  if(hashes.has(asset.id))return hashes.get(asset.id)!;
+  const blob=await file(),hash=blob?await digest(new Uint8Array(await blob.arrayBuffer())):`missing:${asset.id}`;
+  hashes.set(asset.id,hash);return hash;
+}
+/** Compare content, including attachment bytes, independently of timestamps and remapped file IDs. */
+async function ideaSignature(idea:Project,hashes:Map<string,string>,file:(id:string)=>Promise<Blob|undefined>) {
+  const asset=async(value:MediaAsset)=>({...value,id:await assetHash(value,hashes,()=>file(value.id))});
+  return stable({...idea,id:undefined,updatedAt:undefined,coverImage:idea.coverImage?await asset(idea.coverImage):undefined,
+    blocks:await Promise.all(idea.blocks.map(async block=>({...block,id:undefined,width:block.width || "full",textPosition:block.textPosition || "below",media:await Promise.all((block.media || []).map(asset))})))});
+}
+async function copyId(id:string,signature:string,salt=0) {
+  const hash=await digest(new TextEncoder().encode(stable(["idea-bank-import-copy",id,signature,salt])));
+  return `${hash.slice(0,8)}-${hash.slice(8,12)}-4${hash.slice(13,16)}-a${hash.slice(17,20)}-${hash.slice(20,32)}`;
+}
+/** Inspect without writing; an unresolved difference can never overwrite either version. */
+export async function prepareLibraryImport(backup:LibraryBackup,current:Library,scope?:string):Promise<LibraryImportPlan> {
+  const base=parseLibrary(JSON.stringify(current)),incoming=parseLibrary(JSON.stringify(backup.library));
+  const plan:LibraryImportPlan={backup:{...backup,library:incoming},base,conflicts:[],added:0,unchanged:0,sectionsAdded:incoming.sections.filter(section=>!base.sections.some(value=>value.id===section.id)).length,copies:new Map(),same:new Set(),currentHashes:new Map(),archiveHashes:new Map(backup.hashes)};
+  for(const asset of collectAssets(base).values())if(/^[a-f0-9]{64}-[a-f0-9]{32}$/.test(asset.id))plan.currentHashes.set(asset.id,asset.id.slice(0,64));
+  const currentFile=async(id:string)=>{try{return await getMediaFile(id,scope);}catch{return undefined;}};
+  for(const idea of incoming.projects) {
+    const existing=base.projects.find(value=>value.id===idea.id);
+    if(!existing){plan.added++;continue;}
+    const signature=await ideaSignature(idea,plan.archiveHashes,async id=>backup.files.get(id));
+    if(signature===await ideaSignature(existing,plan.currentHashes,currentFile)){plan.same.add(idea.id);plan.unchanged++;continue;}
+    let candidate="",found=false;
+    for(let salt=0;salt<=base.projects.length+incoming.projects.length;salt++) {
+      candidate=await copyId(idea.id,signature,salt);
+      if(incoming.projects.some(value=>value.id===candidate))continue;
+      const previous=base.projects.find(value=>value.id===candidate);
+      if(!previous)break;
+      if(signature===await ideaSignature(previous,plan.currentHashes,currentFile)){found=true;break;}
+    }
+    if(found){plan.same.add(idea.id);plan.unchanged++;continue;}
+    plan.copies.set(idea.id,candidate);plan.conflicts.push({id:idea.id,current:existing,incoming:idea});
+  }
+  return plan;
+}
+/** Commit selected additions/updates and their media atomically; never remove absent ideas. */
+export async function importLibraryBackup(plan:LibraryImportPlan,choices:Record<string,ImportChoice>):Promise<Library> {
+  const expected=await readLocalSnapshot();
+  if(expected && stable(expected.library)!==stable(plan.base))throw new Error(t("Библиотека изменилась в другой вкладке. Повтори восстановление, чтобы не потерять изменения."));
+  const next=structuredClone(plan.base),selected:Project[]=[];
+  for(const section of plan.backup.library.sections)if(!next.sections.some(value=>value.id===section.id))next.sections.push(structuredClone(section));
+  for(const idea of plan.backup.library.projects) {
+    if(plan.same.has(idea.id))continue;
+    const position=next.projects.findIndex(value=>value.id===idea.id);
+    const choice=position<0?"archive":choices[idea.id];
+    if(!choice || !["current","archive","both"].includes(choice))throw new Error(t("Выберите вариант для каждой отличающейся идеи."));
+    if(choice==="current")continue;
+    const imported=structuredClone(idea);
+    if(choice==="both") {
+      imported.id=plan.copies.get(idea.id)!;
+      if(!imported.id || next.projects.some(value=>value.id===imported.id))throw new Error(t("Не удалось подготовить копию идеи. Повторите импорт."));
+      next.projects.push(imported);
+    } else if(position<0)next.projects.push(imported);else next.projects[position]=imported;
+    selected.push(imported);
+  }
+  if(!selected.length && !plan.sectionsAdded)return plan.base;
+  const currentAssets=collectAssets(plan.base),available=new Map<string,string>();
+  for(const [id,hash] of plan.currentHashes) {const asset=currentAssets.get(id);if(asset)available.set(stable([hash,asset.mime,asset.size,asset.kind]),id);}
+  const files=new Map<string,Blob>(),replacements=new Map<string,string>(),used=new Set([...currentAssets.keys(),...plan.backup.files.keys()]);
+  for(const [id,asset] of collectAssets({...next,projects:selected})) {
+    const blob=plan.backup.files.get(id);if(!blob || blob.size!==asset.size)throw new Error(t("Медиа для восстановления не прошли проверку."));
+    const hash=await assetHash(asset,plan.archiveHashes,async()=>blob),key=stable([hash,asset.mime,asset.size,asset.kind]);
+    let target=available.get(key);
+    if(!target){target=createId();while(used.has(target))target=createId();used.add(target);files.set(target,blob);available.set(key,target);}
+    else if(!await readMediaFile(target))files.set(target,blob);
+    replacements.set(id,target);
+  }
+  for(const idea of selected){if(idea.coverImage)idea.coverImage.id=replacements.get(idea.coverImage.id)!;for(const block of idea.blocks)for(const asset of block.media || [])asset.id=replacements.get(asset.id)!;}
+  const checked=parseLibrary(JSON.stringify(next));
+  try{await saveLocalLibrary(checked,expected?.library || null,{files});}
+  catch{throw new Error(t("Не удалось записать библиотеку: проверь свободное место и разрешения браузера. Прежняя библиотека сохранена."));}
+  const kept=new Set(checked.projects.flatMap(projectMediaIds));
+  void removeMediaFiles([...currentAssets.keys()].filter(id=>!kept.has(id))).catch(()=>{});
+  return checked;
 }
 
 /** Stages files under fresh IDs; metadata is switched only after the media transaction succeeds. */

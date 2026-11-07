@@ -29,6 +29,10 @@ try {
   assert.deepEqual(unchanged.changes.records,[]);assert.equal(unchanged.pages.length,0);assert.equal(unchanged.bodies.length,0);
   const controlGets=calls.filter(call=>call.name==="GetObjectCommand").length;
   assert.equal(controlGets,1,"The unchanged ten-minute check reads only its current manifest");
+  const absent=randomUUID();
+  const observed=await fixture.entities().readReaderBatch({since:delta.heads,observe:[...initial.heads,...delta.heads,absent]});
+  assert.deepEqual(observed.observed,[...initial.heads,...delta.heads]);
+  await assert.rejects(()=>fixture.entities().readReaderBatch({observe:["invalid"]}),error=>error.status===400);
   const closed=await fixture.entities().readReaderBatch({since:initial.heads});
   assert.ok(!closed.changes.records.some(record=>schema.keyParts(record.key).kind==="block"),"Without cached bodies a change packet contains metadata only");
   await assert.rejects(()=>fixture.entities().readReaderBatch({watch:Array.from({length:65},(_,n)=>String(n))}),error=>error.status===400);
@@ -43,7 +47,7 @@ try {
   const signed=await fixture.entities().readReaderBatch({mediaOnly:true,media:mediaFiles.map(file=>file.id)});
   assert.equal(signed.media.length,2);assert.ok(signed.media.every(value=>value.download?.expiresIn===300));
   assert.equal(signed.pages.length,0);assert.equal(signed.changes.records.length,0);
-  assert.ok(!calls.some(call=>call.key.includes("/catalog-v1/")),"Media-only packets never rebuild a catalog or advance a document checkpoint");
+  assert.ok(!calls.some(call=>call.name==="PutObjectCommand"),"Media-only packets never rebuild a catalog or advance a document checkpoint");
   assert.equal(calls.filter(call=>call.name==="ListObjectsV2Command" && call.key.endsWith("/indexes/")).length,1);
   console.log(`Reader batch budget (50 ideas, cold cache): changed block ${changedGets} Class B GETs; unchanged control ${controlGets}; no catalog rebuild or unrelated block downloads.`);
 }finally{fixture.storage.client.destroy();}

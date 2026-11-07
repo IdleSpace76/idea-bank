@@ -2,6 +2,19 @@ import { request, transaction } from "./local-database";
 
 type Lease = { owner: string; expires: number };
 const leaseKey = "sync-lease", lockName = "idea-bank.sync", leaseMs = 180000;
+/** Let an in-flight local writer commit its acknowledgement before handling its broker echo. */
+export async function waitForSyncIdle() {
+  if(typeof navigator.locks?.request==="function") {
+    await navigator.locks.request(lockName,{mode:"exclusive"},()=>{});return;
+  }
+  let delay=100;
+  for(;;) {
+    const lease=await transaction(["meta"],"readonly",async tx=>request<Lease|undefined>(tx.objectStore("meta").get(leaseKey)));
+    const now=Date.now();
+    if(!lease || lease.expires<=now || lease.expires>now+leaseMs)return;
+    await new Promise(resolve=>setTimeout(resolve,delay));delay=Math.min(delay*2,1000);
+  }
+}
 /** Prefer browser-managed locks; use a transactional, expiring lease where Web Locks are absent. */
 export async function withSyncLock(work: (valid: () => boolean) => Promise<void>): Promise<boolean> {
   if (typeof navigator.locks?.request === "function") {

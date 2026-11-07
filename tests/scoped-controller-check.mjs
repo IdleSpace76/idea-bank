@@ -6,7 +6,7 @@ import ts from "typescript";
 const source=await readFile(new URL("../lib/scoped-controller.ts",import.meta.url),"utf8");
 const compiled=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
 const exports={},timers=new Map();let id=0,refreshes=0,locks=0,flushes=0,receive=()=>{},rows=[];const modes=[];
-let receiveRevision=()=>{},foreignDuringFlush=false;
+let receiveRevision=()=>{},foreignDuringFlush=false;const safetyModes=[],revisionModes=[];
 class ScopedError extends Error {}
 const modules={
   "./sync-events-client":{SyncEventsClient:class{constructor(options){receiveRevision=options.onRevision;}start(){}stop(){}}},
@@ -18,7 +18,7 @@ const modules={
   "./cloud-access":{cloudBackoffRemaining:()=>0,retryCloudAccess:()=>{}},
 };
 vm.runInNewContext(compiled,{exports,Date,window:new EventTarget(),document:Object.assign(new EventTarget(),{visibilityState:"visible"}),navigator:{onLine:true},setTimeout:(fn,delay)=>{timers.set(++id,{fn,delay});return id;},clearTimeout:key=>timers.delete(key),require:name=>{assert.ok(Object.hasOwn(modules,name));return modules[name];}});
-const controller=new exports.ScopedSyncController("owner",{canRun:()=>true,refresh:local=>{refreshes++;modes.push(local);}});controller.start();
+const controller=new exports.ScopedSyncController("owner",{canRun:()=>true,refresh:(local,safety,revisions)=>{refreshes++;modes.push(local);safetyModes.push(safety);revisionModes.push(revisions);}});controller.start();
 await controller.check();assert.equal(locks,0,"An idle controller does not acquire a write lease");
 assert.equal(refreshes,1);
 refreshes=0;
@@ -33,5 +33,10 @@ foreignDuringFlush=true;rows=[{scope:"owner",target:{kind:"idea",id:"foreign-cas
 await controller.check(false,undefined,true);
 assert.ok([...timers.values()].some(timer=>timer.delay===250),"An unrelated event during our PUT is still fetched");
 await controller.check(false,undefined,true);assert.equal(modes.at(-1),false);
+assert.deepEqual([...revisionModes.at(-1)],["foreign-write"],"Only foreign revisions reach the shared event reader");
+assert.equal(safetyModes.at(-1),false,"Broker events bypass the shared safety interval");
+const [safetyId,safetyTimer]=[...timers.entries()].find(([,timer])=>timer.delay===600000);timers.delete(safetyId);safetyTimer.fn();
+await new Promise(resolve=>setImmediate(resolve));
+assert.equal(safetyModes.at(-1),true,"The periodic check uses browser-wide deduplication");
 controller.stop();assert.equal(timers.size,0);
 console.log("Scoped controller budget: no idle write lock and one local refresh for a three-idea batch passed.");

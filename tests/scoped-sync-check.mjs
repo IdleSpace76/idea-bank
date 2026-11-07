@@ -57,9 +57,9 @@ try {
             if(body.target.kind==="idea" && body.target.id==="a")assert.ok(!read.records.some(record=>schema.keyParts(record.key).kind==="block" && schema.keyParts(record.key).ids[0]==="b"));
             return reply(read);
           }
-          batches.push(body);const result=await fixture.entities().save(body);broadcast(result.revision,body.changes.map(change=>change.key));
+          batches.push(body);const result=await fixture.entities().saveScoped(body);broadcast(result.revision,body.changes.map(change=>change.key));
           if(state.hold){state.entered?.();await state.hold;state.hold=null;}
-          if(state.drop){state.drop=false;return route.abort("failed");}
+          if(state.drop){state.drop=false;state.droppedOperationId=body.operationId;return route.abort("failed");}
           return reply(result);
         }
         throw new Error(`Unexpected full-library request: ${url.pathname}`);
@@ -73,12 +73,29 @@ try {
   const edit=async page=>{await page.getByRole("button",{name:"Редактировать блок 1",exact:true}).click();await expect(page.locator("#project-editor")).toBeVisible();};
   const save=page=>page.getByRole("button",{name:"Сохранить идею",exact:true}).click();
   const setOffline=async(device,value)=>{device.state.offline=value;await device.page.evaluate(value=>{Object.defineProperty(navigator,"onLine",{configurable:true,get:()=>!value});window.dispatchEvent(new Event(value?"offline":"online"));},value);};
+  await phase(a.page,"synced");
+  const noEditStart=calls.length,noEditHeads=(await scopedState()).heads;
+  await edit(a.page);await save(a.page);await expect(a.page.locator("#project-editor")).toHaveCount(0);await delay(1500);
+  assert.equal(calls.slice(noEditStart).filter(call=>call.state===a.state && call.url==="/api/sync/scoped").length,0,"Saving unchanged blocks neither reads nor writes the cloud");
+  assert.deepEqual((await scopedState()).heads,noEditHeads,"A no-op save preserves the revision and timestamp");
+  const noMetadataStart=calls.length;
+  await a.page.getByRole("button",{name:"Изменить",exact:true}).click();
+  await expect(a.page.getByRole("dialog")).toBeVisible();
+  await a.page.getByRole("dialog").getByRole("button",{name:"Сохранить",exact:true}).click();await delay(1500);
+  assert.equal(calls.slice(noMetadataStart).filter(call=>call.state===a.state && call.url==="/api/sync/scoped").length,0,`Saving unchanged idea metadata never queues a cloud check: ${JSON.stringify(calls.slice(noMetadataStart).filter(call=>call.state===a.state).map(call=>({url:call.url,method:call.method})))}`);
+  assert.deepEqual((await scopedState()).heads,noEditHeads);
   await a.page.getByRole("button",{name:"Изменить",exact:true}).click();await a.page.getByLabel("Краткое описание",{exact:false}).fill("Live description");await a.page.getByRole("dialog").getByRole("button",{name:"Сохранить",exact:true}).click();
   await expect(b.page.locator(".page-subtitle")).toHaveText("Live description");
   assert.equal(calls.filter(call=>call.url==="/api/ideas/b").length,0);
   await edit(b.page);await b.page.getByLabel("Заголовок блока",{exact:true}).first().fill("Unsaved heading");
+  const saveStart=calls.length;
   await edit(a.page);await a.page.getByLabel("Текст",{exact:true}).nth(1).fill("Incoming second block");await save(a.page);
   await expect.poll(()=>blockText("two")).toBe("Incoming second block");await delay(600);
+  await phase(a.page,"synced");
+  const saveCalls=calls.slice(saveStart).filter(call=>call.state===a.state && call.url==="/api/sync/scoped");
+  assert.equal(saveCalls.filter(call=>call.method==="POST").length,0,"An existing idea is sent with its causal base without a pre-save HTTP read");
+  assert.equal(saveCalls.filter(call=>call.method==="PUT").length,1);
+  assert.ok(batches[0].readBack,"The writer requests the post-commit domain in the PUT response");
   await expect(b.page.getByLabel("Заголовок блока",{exact:true}).first()).toHaveValue("Unsaved heading");
   await expect(b.page.locator(".draft-status")).toHaveText("Черновик сохранён на устройстве");
   await b.page.reload();await b.page.getByRole("button",{name:"Восстановить черновик",exact:true}).click();
@@ -103,7 +120,9 @@ try {
   // A lost response retries the exact persisted operation.
   await a.page.getByRole("button",{name:"Изменить",exact:true}).click();await a.page.getByLabel("Краткое описание",{exact:false}).fill("Lost response");a.state.drop=true;const before=batches.length;
   await a.page.getByRole("dialog").getByRole("button",{name:"Сохранить",exact:true}).click();
-  await expect.poll(()=>batches.length,{timeout:15000}).toBeGreaterThan(before+1);assert.equal(batches[before].operationId,batches[before+1].operationId);await phase(a.page,"synced");
+  await expect.poll(()=>batches.slice(before).filter(batch=>batch.operationId===a.state.droppedOperationId).length,{timeout:15000}).toBeGreaterThan(1);
+  const lostAttempts=batches.slice(before).filter(batch=>batch.operationId===a.state.droppedOperationId);
+  assert.deepEqual(lostAttempts[0],lostAttempts[1],"Retry the committed operation exactly, even if a stale-base attempt preceded it");await phase(a.page,"synced");
   // A second edit during an in-flight upload cannot be acknowledged by the first upload.
   await a.page.getByRole("button",{name:"Изменить",exact:true}).click();await a.page.getByLabel("Краткое описание",{exact:false}).fill("In flight");
   let release,entered;a.state.hold=new Promise(resolve=>release=resolve);const waiting=new Promise(resolve=>entered=resolve);a.state.entered=entered;
@@ -132,6 +151,26 @@ try {
   await a.page.getByRole("button",{name:"Действия с идеей",exact:true}).click();await a.page.getByRole("menuitem",{name:"Удалить идею",exact:true}).click();
   await a.page.getByRole("dialog").getByRole("button",{name:"Удалить идею",exact:true}).click();
   await expect(b.page.locator(".sidebar .nav-item").filter({hasText:"Section"}).locator("small")).toHaveText("2");
+  // Two visible windows of one browser share one event packet and update both open documents.
+  await a.context.addInitScript(()=>Object.defineProperty(document,"visibilityState",{configurable:true,get:()=>"visible"}));
+  await a.page.goto(origin+"/#/project/a");await expect(a.page.getByRole("heading",{name:"One",exact:true})).toBeVisible();
+  const twin=await a.context.newPage();twin.on("pageerror",error=>errors.push(error.message));await twin.goto(origin+"/#/project/a");
+  await expect(twin.getByRole("heading",{name:"One",exact:true})).toBeVisible();
+  await expect.poll(()=>[...sockets].filter(socket=>socket.attached).length).toBe(3);await phase(a.page,"synced");await phase(twin,"synced");
+  const echoStart=packets.length;
+  let releaseEcho,enteredEcho;a.state.hold=new Promise(resolve=>releaseEcho=resolve);
+  const echoWaiting=new Promise(resolve=>enteredEcho=resolve);a.state.entered=enteredEcho;
+  await edit(a.page);await a.page.getByLabel("Текст",{exact:true}).first().fill("Shared local acknowledgement");await save(a.page);
+  await Promise.race([echoWaiting,delay(15000).then(()=>{throw new Error("Writer fixture did not enter its held PUT");})]);await delay(500);
+  assert.equal(packets.slice(echoStart).filter(packet=>packet.state===a.state).length,0,"Sibling tabs wait for the writer when the broker message precedes its HTTP response");
+  releaseEcho();await phase(a.page,"synced");await expect(twin.getByText("Shared local acknowledgement",{exact:true})).toBeVisible();await delay(500);
+  assert.equal(packets.slice(echoStart).filter(packet=>packet.state===a.state).length,0,"A committed shared-cache write needs no reader packet in either local window");
+  const sharedStart=packets.length;
+  await edit(b.page);await b.page.getByLabel("Текст",{exact:true}).first().fill("One packet for two windows");await save(b.page);
+  await expect(a.page.getByText("One packet for two windows",{exact:true})).toBeVisible();await expect(twin.getByText("One packet for two windows",{exact:true})).toBeVisible();
+  const sharedRevision=(await scopedState()).records.find(record=>record.key===entityKey("block","a","one")).revision;
+  assert.equal(packets.slice(sharedStart).filter(packet=>packet.state===a.state && packet.input.observe?.includes(sharedRevision)).length,1,"Both windows observe one server-confirmed broker packet");
+  await twin.close();
   assert.equal(calls.filter(call=>call.url==="/api/sync").length,0);assert.equal(calls.filter(call=>call.url==="/api/ideas/b").length,0);
   assert.ok(!batches.some(batch=>batch.changes.some(change=>schema.keyParts(change.key).ids[0]==="b")),"Closed ideas are never rewritten");
   assert.equal(errors.length,0,errors.join("\n"));for(const device of [a,b]){assert.ok(await device.page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await device.context.close();}

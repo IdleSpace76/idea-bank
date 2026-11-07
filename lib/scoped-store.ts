@@ -4,6 +4,7 @@ import { summarizeIdea,type IdeaSummary,type Project,type Section } from "./idea
 import { removeReaderCacheIn,writeReaderCacheIn,settleReaderPagesIn,advanceReaderEpochIn } from "./reader-cache";
 import { cacheKey,pruneCacheIn,MEDIA_CACHE_LIMIT,type CacheState } from "./media-cache-store";
 import type { CloudMedia } from "./cloud-library";
+import { rememberReaderEventsIn } from "./shared-reader-check";
 import { editCacheId,targetKey,type ScopedEntry,type ScopedOperation,type ScopedRead,type ScopedSummary,type SyncTarget } from "./scoped-types";
 const indexKey="scoped-queue-v1",channelName="idea-bank.scoped.changes";
 const notificationSource=crypto.randomUUID();
@@ -137,5 +138,6 @@ export async function settleScoped(entry:ScopedEntry,read:ScopedRead,values:Enti
       }
       const next={...current,base:conflict?current.base:committed || read,local,operation:undefined};meta.put(next,key);meta.put(index.map(row=>row.key===key?summary(next):row),indexKey);
     }
+    if(committed?.heads.length===1)await rememberReaderEventsIn(tx,entry.scope,committed.heads);
   });notifyScoped(entry.scope);
 }

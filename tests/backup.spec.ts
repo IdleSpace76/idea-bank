@@ -42,6 +42,13 @@ async function snapshot(page: Page) {
 async function openBackups(page: Page) { await page.getByRole("button", { name: "Локальная версия", exact: true }).click(); await expect(page.getByRole("heading", { name: "Резервная копия", exact: true })).toBeVisible(); }
 async function inspect(page: Page, bytes: Buffer) { await page.getByLabel("Выбрать архив библиотеки", { exact: true }).setInputFiles({ name: "library.zip", mimeType: "application/zip", buffer: bytes }); }
 
+async function importIdeas(page:Page,choice="Взять из архива") {
+  await expect(page.locator(".backup-preview")).toBeVisible();
+  const conflicts=page.locator(".backup-import-conflict");
+  for(let n=0;n<await conflicts.count();n++)await conflicts.nth(n).getByRole("button",{name:choice,exact:true}).click();
+  await page.getByRole("button",{name:"Импортировать идеи",exact:true}).click();
+}
+
 function triangle() {
   const binary = Buffer.alloc(36); [-1, -1, 0, 1, -1, 0, 0, 1, 0].forEach((n, i) => binary.writeFloatLE(n, i * 4));
   const doc = { asset: { version: "2.0" }, scene: 0, scenes: [{ nodes: [0] }], nodes: [{ mesh: 0 }], meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }], buffers: [{ byteLength: 36 }], bufferViews: [{ buffer: 0, byteLength: 36 }], accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: "VEC3", min: [-1, -1, 0], max: [1, 1, 0] }] };
@@ -77,10 +84,10 @@ test("a ZIP transfers covers, rich text, layout and every media kind to a clean 
     await expect(target.getByText("Архив проверен. Текущая библиотека пока не изменена.", { exact: true })).toBeVisible();
     expect(await target.evaluate(key => localStorage.getItem(key), STORAGE_KEY)).toBeNull();
     await target.getByRole("button", { name: "Отмена импорта", exact: true }).click();
-    await expect(target.getByRole("button", { name: "Заменить библиотеку", exact: true })).toHaveCount(0);
+    await expect(target.getByRole("button", { name: "Импортировать идеи", exact: true })).toHaveCount(0);
     await inspect(target, bytes); await expect(target.locator(".backup-preview")).toBeVisible();
     await target.screenshot({ path: info.outputPath("backup-preview.png"), fullPage: true });
-    await target.getByRole("button", { name: "Заменить библиотеку", exact: true }).click();
+    await importIdeas(target);
     await expect(target.getByRole("dialog")).toHaveCount(0); await target.reload();
     const state = await snapshot(target), restored = JSON.parse(state.raw!), idea = restored.projects[0];
     expect(idea.coverImage.id).toBe(idea.blocks[0].media[0].id); expect(idea.coverImage.id).not.toBe("shared-image");
@@ -96,6 +103,47 @@ test("a ZIP transfers covers, rich text, layout and every media kind to a clean 
     const model = target.locator(".model-preview"); await model.scrollIntoViewIfNeeded(); await expect(model).toHaveAttribute("data-state", "ready", { timeout: 30000 });
     expect(await target.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   } finally { await targetContext.close(); }
+});
+
+test("ZIP merge preserves ideas absent from the archive and repeated import adds no duplicates",async({page})=>{
+  const base=smallLibrary();base.projects=[{...structuredClone(base.projects[0]),id:"a",name:"A"},{...structuredClone(base.projects[0]),id:"b",name:"B"}];
+  await seed(page,base,[{id:"shared-image",mime:"image/png",base64:pixel.toString("base64")}]);
+  const incoming:Library={version:1,sections:[{...base.sections[0],name:"Archive name"},{id:"new-section",name:"New section",description:"",icon:"folder"}],projects:[structuredClone(base.projects[1]),{...structuredClone(base.projects[0]),id:"c",name:"C",sectionId:"new-section"}]};
+  const bytes=archive(incoming).bytes;
+  await openBackups(page);await inspect(page,bytes);await expect(page.locator(".backup-import-summary")).toContainText("Новых идей: 1. Уже есть: 1. Отличаются: 0.");
+  await importIdeas(page);await expect(page.getByRole("dialog")).toHaveCount(0);
+  const merged=await page.evaluate(readStoredLibrary);
+  expect(merged.projects.map(idea=>idea.name).sort()).toEqual(["A","B","C"]);
+  expect(merged.projects.find(idea=>idea.id==="a")).toEqual(base.projects[0]);
+  expect(merged.sections[0]).toEqual(base.sections[0]);expect(merged.sections).toHaveLength(2);
+  const once=await snapshot(page);
+  await openBackups(page);await inspect(page,bytes);await expect(page.locator(".backup-import-summary")).toContainText("Новых идей: 0. Уже есть: 2. Отличаются: 0.");
+  await importIdeas(page);await expect(page.getByRole("dialog")).toHaveCount(0);expect(await snapshot(page)).toEqual(once);
+});
+
+test("ZIP conflicts require a visible choice and support keeping either or both versions with media",async({page},info)=>{
+  for(const choice of ["Оставить текущую","Взять из архива","Сохранить обе"]) {
+    const base=smallLibrary();base.projects[0].name="Current idea";
+    await seed(page,base,[{id:"shared-image",mime:"image/png",base64:pixel.toString("base64")}]);
+    const changed=Buffer.from("different attachment"),incoming=smallLibrary(changed);incoming.projects[0].name="Archive idea";
+    const bytes=archive(incoming,new Map([["shared-image",changed]])).bytes,before=await snapshot(page);
+    await openBackups(page);await inspect(page,bytes);await expect(page.locator(".backup-import-conflict")).toBeVisible();
+    await expect(page.getByRole("button",{name:"Импортировать идеи",exact:true})).toBeDisabled();
+    await page.locator(".backup-import-conflict").getByText("Сравнить версии",{exact:true}).click();
+    await expect(page.locator(".backup-import-comparison")).toContainText("Current idea");await expect(page.locator(".backup-import-comparison")).toContainText("Archive idea");
+    await page.locator(".backup-import-conflict").getByRole("button",{name:choice,exact:true}).click();
+    await expect(page.locator(".backup-import-conflict").getByRole("button",{name:choice,exact:true})).toHaveAttribute("aria-pressed","true");
+    if(choice==="Оставить текущую")await page.screenshot({path:info.outputPath("zip-conflict.png"),fullPage:true});
+    await importIdeas(page,choice);await expect(page.getByRole("dialog")).toHaveCount(0);
+    const merged=await page.evaluate(readStoredLibrary);
+    expect(merged.projects.map(idea=>idea.name).sort()).toEqual(choice==="Сохранить обе"?["Archive idea","Current idea"]:[choice==="Оставить текущую"?"Current idea":"Archive idea"]);
+    if(choice==="Оставить текущую")expect(await snapshot(page)).toEqual(before);
+    else {
+      await expect.poll(async()=>(await snapshot(page)).files.map(file=>file.hash).sort()).toEqual((choice==="Сохранить обе"?[sha(pixel),sha(changed)]:[sha(changed)]).sort());
+      const once=await snapshot(page);await openBackups(page);await inspect(page,bytes);
+      await expect(page.locator(".backup-import-conflict")).toHaveCount(0);await importIdeas(page);await expect(page.getByRole("dialog")).toHaveCount(0);expect(await snapshot(page)).toEqual(once);
+    }
+  }
 });
 
 test("invalid, incomplete, altered and oversized archives leave saved data untouched", async ({ page }) => {
@@ -123,7 +171,7 @@ test("media and metadata write failures preserve old files even when imported ID
       if (failure === "media") { const put = IDBObjectStore.prototype.put; IDBObjectStore.prototype.put = function () { throw new DOMException("Disk full", "QuotaExceededError"); }; state.restorePatch = () => { IDBObjectStore.prototype.put = put; }; }
       else { const put = IDBObjectStore.prototype.put; IDBObjectStore.prototype.put = function (...args: Parameters<IDBObjectStore["put"]>) { if (this.name === "ideas") throw new DOMException("Disk full", "QuotaExceededError"); return put.apply(this, args); }; state.restorePatch = () => { IDBObjectStore.prototype.put = put; }; }
     }, { failure, key: STORAGE_KEY });
-    await page.getByRole("button", { name: "Заменить библиотеку", exact: true }).click();
+    await importIdeas(page);
     await expect(page.locator(".backup-error")).toContainText("Прежняя библиотека сохранена");
     expect(await snapshot(page)).toEqual(before);
     await page.evaluate(() => (window as unknown as { restorePatch: () => void }).restorePatch());
@@ -150,7 +198,7 @@ test("incompatible raw data can be downloaded before explicit recovery", async (
   expect(await readFile((await (await downloaded).path())!, "utf-8")).toBe('{"version":99,"saved":"keep me"}');
   await inspect(page, archive(smallLibrary()).bytes); await expect(page.locator(".backup-preview")).toBeVisible();
   expect(await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY)).toBe('{"version":99,"saved":"keep me"}');
-  await page.getByRole("button", { name: "Заменить библиотеку", exact: true }).click(); await expect(page.getByRole("dialog")).toHaveCount(0);
+  await importIdeas(page); await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.reload(); await expect(page.locator(".storage-warning")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Создать раздел", exact: true }).last()).toBeEnabled();
   expect(JSON.parse((await snapshot(page)).raw!).projects[0].name).toBe("Моя сохранённая идея");
@@ -161,11 +209,11 @@ test("a library changed during staging is preserved instead of overwritten", asy
   const before = await snapshot(page), changed = structuredClone(library); changed.projects[0].name = "Изменения из другой вкладки";
   await openBackups(page); await inspect(page, archive(library).bytes); await expect(page.locator(".backup-preview")).toBeVisible();
   await setStoredLibrary(page, changed);
-  await page.getByRole("button", { name: "Заменить библиотеку", exact: true }).click(); await expect(page.locator(".backup-error")).toContainText("другой вкладке");
+  await importIdeas(page); await expect(page.locator(".backup-error")).toContainText("другой вкладке");
   const after = await snapshot(page); expect(JSON.parse(after.raw!)).toEqual(changed); expect(after.files).toEqual(before.files);
 });
 
-test("Example is the only starter idea and reset requires explicit replacement", async ({ page }) => {
+test("Example is the only starter idea and loading it uses the merge choices", async ({ page }) => {
   expect(demoLibrary.projects).toHaveLength(1); expect(demoLibrary.projects[0].name).toBe("Example");
   await page.goto("/"); await expect(page.locator(".project-card")).toHaveCount(1);
   const personal = smallLibrary();
@@ -176,7 +224,7 @@ test("Example is the only starter idea and reset requires explicit replacement",
   expect(await snapshot(page)).toEqual(before);
   await page.getByRole("button", { name: "Отмена", exact: true }).click(); expect(await snapshot(page)).toEqual(before);
   await page.getByRole("button", { name: "Загрузить Example", exact: true }).click();
-  await page.getByRole("button", { name: "Заменить библиотеку", exact: true }).click();
+  await importIdeas(page);
   await expect(page.getByRole("dialog")).toHaveCount(0); await page.reload();
   await expect(page.locator(".project-card")).toHaveCount(1); await expect(page.locator(".project-card > strong")).toHaveText("Example");
   const restored = JSON.parse((await snapshot(page)).raw!);
@@ -188,7 +236,7 @@ test("Example is the only starter idea and reset requires explicit replacement",
   await expect.poll(async () => (await snapshot(page)).files.length).toBe(2);
 });
 
-test("clear your head requires confirmation and resets the library to one complete Example", async ({ page }) => {
+test("clear your head requires confirmation and leaves an empty library without Example", async ({ page }) => {
   await seed(page, smallLibrary(), [{ id: "shared-image", mime: "image/png", base64: pixel.toString("base64") }]);
   const before = await snapshot(page); await openBackups(page);
   const trigger = page.locator(".backup-reset-buttons").getByRole("button", { name: "Очистить голову", exact: true });
@@ -208,12 +256,14 @@ test("clear your head requires confirmation and resets the library to one comple
   expect(await snapshot(page)).toEqual(before);
   await trigger.click(); await warning.getByRole("button", { name: "Очистить голову", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await page.reload(); await expect(page.locator(".project-card > strong")).toHaveText("Example");
-  const library = await page.evaluate(readStoredLibrary);
-  expect(library.sections).toEqual(demoLibrary.sections); expect(library.projects).toHaveLength(1);
-  expect(library.projects[0].blocks.map(block => block.heading)).toEqual(demoLibrary.projects[0].blocks.map(block => block.heading));
-  expect(library.projects[0].blocks.flatMap(block => block.media || []).map(asset => asset.name)).toEqual(["little-robot.png", "little-robot.glb"]);
-  await expect.poll(async () => (await snapshot(page)).files.length).toBe(2);
+  await page.reload(); await expect(page.locator(".project-card")).toHaveCount(0);
+  const library=await page.evaluate(readStoredLibrary);
+  expect(library.sections).toEqual([]);expect(library.projects).toEqual([]);
+  await expect.poll(async()=>(await snapshot(page)).files.length).toBe(0);
+  await openBackups(page);await inspect(page,archive(smallLibrary()).bytes);await expect(page.locator(".backup-import-conflict")).toHaveCount(0);await importIdeas(page);
+  await expect(page.getByRole("dialog")).toHaveCount(0);await page.reload();
+  await expect(page.locator(".project-card > strong")).toHaveText("Моя сохранённая идея");
+  expect((await page.evaluate(readStoredLibrary)).projects).toHaveLength(1);
 });
 
 test("failed or stale clear-your-head requests preserve the existing library", async ({ page }) => {
@@ -221,10 +271,15 @@ test("failed or stale clear-your-head requests preserve the existing library", a
   await openBackups(page); const before = await snapshot(page);
   const trigger = page.locator(".backup-reset-buttons").getByRole("button", { name: "Очистить голову", exact: true });
   const warning = page.getByRole("dialog", { name: "Очистить голову?", exact: true });
-  await page.route("**/examples/little-robot.png", route => route.abort());
-  await trigger.click(); await warning.getByRole("button", { name: "Очистить голову", exact: true }).click();
-  await expect(page.locator(".backup-error")).toContainText("Не удалось загрузить медиа Example");
-  expect(await snapshot(page)).toEqual(before); await page.unroute("**/examples/little-robot.png");
+  await trigger.click();
+  await page.evaluate(()=>{
+    const original=IDBObjectStore.prototype.put;
+    (window as any).restoreClear=()=>{IDBObjectStore.prototype.put=original;};
+    IDBObjectStore.prototype.put=function(...args){if(this.name==="meta")throw new DOMException("Disk full","QuotaExceededError");return original.apply(this,args);};
+  });
+  await warning.getByRole("button",{name:"Очистить голову",exact:true}).click();
+  await expect(page.locator(".backup-error")).toContainText("Прежняя библиотека сохранена");
+  expect(await snapshot(page)).toEqual(before);await page.evaluate(()=>(window as any).restoreClear());
   await trigger.click();
   const changed = smallLibrary(); changed.projects[0].name = "Newer data in another tab"; await setStoredLibrary(page, changed);
   await warning.getByRole("button", { name: "Очистить голову", exact: true }).click();

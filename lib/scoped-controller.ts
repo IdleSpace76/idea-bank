@@ -5,9 +5,8 @@ import { flushScoped,scopedPlan,type ScopedPlan,ScopedError } from "./scoped-cli
 import { queueScoped,readScopedEntry,readScopedIndex,subscribeScoped,beginScopedBatch } from "./scoped-store";
 import type { SyncChoices,EntityPlan } from "./entity-client";
 import type { SyncTarget } from "./scoped-types";
-import { markReaderStale } from "./reader-cache";
 import { cloudBackoffRemaining,retryCloudAccess } from "./cloud-access";
-type Options={canRun:()=>boolean;refresh:(localOnly?:boolean)=>void};
+type Options={canRun:()=>boolean;refresh:(localOnly?:boolean,safety?:boolean,revisions?:string[])=>void};
 /** Flush one durable edit domain at a time; events invalidate reads instead of downloading bodies. */
 export class ScopedSyncController {
   private view:SyncView={...initialSyncView,phase:"synced"};
@@ -16,15 +15,17 @@ export class ScopedSyncController {
   private timer:ReturnType<typeof setTimeout>|null=null;private events:SyncEventsClient|null=null;
   private cleanup:(()=>void)|null=null;private refreshPending=false;
   private cloudRefreshPending=false;
+  private safetyRefreshPending=false;
   private connectedOnce=false;
   private seen=new Set<string>();
   private deferredRevisions=new Set<string>();
+  private refreshRevisions=new Set<string>();
   constructor(readonly scope:string,private options:Options){}
   subscribe=(listener:()=>void)=>{this.listeners.add(listener);return()=>{this.listeners.delete(listener);};};
   getSnapshot=()=>this.view;
   private patch(value:Partial<SyncView>){this.view={...this.view,...value};for(const listener of this.listeners)listener();}
-  private schedule(delay:number,invalidate=false){if(this.stopped || document.visibilityState==="hidden")return;if(this.timer)clearTimeout(this.timer);this.timer=setTimeout(()=>{this.timer=null;if(invalidate){this.refreshPending=true;this.cloudRefreshPending=true;}void this.check(false,undefined,true);},Math.max(delay,cloudBackoffRemaining()));}
-  private refresh(afterBatch=false,localOnly=false){if(!localOnly)this.cloudRefreshPending=true;if(this.running && !afterBatch){this.refreshPending=true;return;}if(this.options.canRun()){this.refreshPending=false;const local=!this.cloudRefreshPending;this.cloudRefreshPending=false;this.options.refresh(local);}else this.refreshPending=true;}
+  private schedule(delay:number,invalidate=false){if(this.stopped || document.visibilityState==="hidden")return;if(this.timer)clearTimeout(this.timer);this.timer=setTimeout(()=>{this.timer=null;if(invalidate){if(!this.cloudRefreshPending)this.safetyRefreshPending=true;this.refreshPending=true;this.cloudRefreshPending=true;}void this.check(false,undefined,true);},Math.max(delay,cloudBackoffRemaining()));}
+  private refresh(afterBatch=false,localOnly=false){if(!localOnly){this.cloudRefreshPending=true;this.safetyRefreshPending=false;}if(this.running && !afterBatch){this.refreshPending=true;return;}if(this.options.canRun()){this.refreshPending=false;const local=!this.cloudRefreshPending,safety=this.safetyRefreshPending,revisions=[...this.refreshRevisions];this.cloudRefreshPending=false;this.safetyRefreshPending=false;this.refreshRevisions.clear();this.options.refresh(local,!local&&safety,!local&&revisions.length?revisions:undefined);}else this.refreshPending=true;}
   start(){
     if(!this.stopped)return;this.stopped=false;this.generation++;
     const wake=()=>{if(document.visibilityState==="hidden"){if(this.timer)clearTimeout(this.timer);this.timer=null;return;}if(navigator.onLine===false)this.patch({phase:"offline"});else{if(this.view.phase==="auth")this.patch({phase:"waiting"});this.schedule(100);}};
@@ -35,8 +36,9 @@ export class ScopedSyncController {
       if(this.stopped || this.seen.has(revision))return;this.seen.add(revision);while(this.seen.size>512)this.seen.delete(this.seen.values().next().value!);
       // The broker can echo our PUT before its HTTP response arrives.
       if(this.running){this.seen.delete(revision);this.deferredRevisions.add(revision);while(this.deferredRevisions.size>512)this.deferredRevisions.delete(this.deferredRevisions.values().next().value!);return;}
-      void markReaderStale(this.scope).catch(()=>{});this.refreshPending=true;this.cloudRefreshPending=true;this.schedule(250);
-    },onConnection:ready=>{if(ready){if(!this.connectedOnce){this.connectedOnce=true;return;}this.refreshPending=true;this.cloudRefreshPending=true;this.schedule(250);}else if(!this.running)this.schedule(600000);}});
+      this.refreshRevisions.add(revision);while(this.refreshRevisions.size>512)this.refreshRevisions.delete(this.refreshRevisions.values().next().value!);
+      this.refreshPending=true;this.cloudRefreshPending=true;this.safetyRefreshPending=false;this.schedule(250);
+    },onConnection:ready=>{if(ready){if(!this.connectedOnce){this.connectedOnce=true;return;}this.refreshPending=true;this.cloudRefreshPending=true;this.refreshRevisions.clear();this.safetyRefreshPending=false;this.schedule(250);}else if(!this.running)this.schedule(600000);}});
     this.events.start();this.cleanup=()=>{unsubscribe();window.removeEventListener("online",wake);window.removeEventListener("offline",offline);window.removeEventListener("focus",wake);document.removeEventListener("visibilitychange",wake);};
     if(navigator.onLine===false)offline();else this.schedule(100);
   }
@@ -60,7 +62,7 @@ export class ScopedSyncController {
     if(!automatic)retryCloudAccess();
     if(!this.options.canRun()){this.refreshPending=true;this.schedule(2000);return;}
     if(automatic && !resolution && ["conflict","auth","error"].includes(this.view.phase))return;
-    if(!automatic){this.refreshPending=true;this.cloudRefreshPending=true;}
+    if(!automatic){this.refreshPending=true;this.cloudRefreshPending=true;this.refreshRevisions.clear();this.safetyRefreshPending=false;}
     this.running=true;const generation=this.generation;
     if(this.timer)clearTimeout(this.timer);this.timer=null;
     const valid=()=>!this.stopped && generation===this.generation && this.options.canRun();
@@ -101,7 +103,9 @@ export class ScopedSyncController {
       if(!this.stopped && generation===this.generation) {
         this.patch({busy:false});
         if([...this.deferredRevisions].some(revision=>!this.seen.has(revision))) {
-          void markReaderStale(this.scope).catch(()=>{});this.refreshPending=true;this.cloudRefreshPending=true;this.schedule(250);
+          for(const revision of this.deferredRevisions)if(!this.seen.has(revision))this.refreshRevisions.add(revision);
+          while(this.refreshRevisions.size>512)this.refreshRevisions.delete(this.refreshRevisions.values().next().value!);
+          this.refreshPending=true;this.cloudRefreshPending=true;this.safetyRefreshPending=false;this.schedule(250);
         }
       }
       this.deferredRevisions.clear();

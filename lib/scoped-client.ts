@@ -1,10 +1,11 @@
 import { assembleLibrary,canonicalLibrary,contentId,entityKey,equal,flattenLibrary,keyParts,stable,type EntityMap,type EntityChange,type SyncCheckpoint } from "./entity-sync";
 import { localMedia,resolvePlan,uploadNeeded,validateRead,type EntityPlan,type SyncChoices } from "./entity-client";
-import { revisionPattern,type CloudMedia } from "./cloud-library";
+import { revisionPattern,libraryAssets,parseCloudMedia,type CloudMedia } from "./cloud-library";
 import { readReaderCache,writeReaderCache } from "./reader-cache";
 import { clearScopedOperation,persistScopedOperation,queueScoped,readScopedEntry,rebaseScoped,settleScoped } from "./scoped-store";
 import { editCacheId as cacheId,type ScopedEntry,type ScopedRead,type SyncTarget } from "./scoped-types";
 import { cloudFetch,CloudAccessError } from "./cloud-access";
+import { summarizeIdea,type IdeaSummary,type Project,type Section } from "./ideas";
 export type ScopedPlan=EntityPlan & {target:SyncTarget;sequence:number};
 export class ScopedError extends Error {constructor(public code:string,message:string,public status=0){super(message);}}
 export async function scopedApi(path:string,body:unknown,method="POST"):Promise<any> {
@@ -30,17 +31,21 @@ export function scopedPlan(entry:ScopedEntry,read:ScopedRead,local=entry.local,b
   const plan:ScopedPlan={scope:entry.scope,target:entry.target,sequence:entry.sequence,expected,local,base:baseline || before.remote,...remote,read,sources:[],first:false,conflicts:[]};
   plan.conflicts=resolvePlan(plan).conflicts;return plan;
 }
-export async function prepareTarget(scope:string,target:SyncTarget,visible?:import("./ideas").Project,viewBase?:ScopedRead) {
+function matchesVisibleTarget(library:import("./ideas").Library,target:SyncTarget,visible:Project|IdeaSummary|Section) {
+  const selected=target.kind==="idea"?library.projects.find(idea=>idea.id===target.id):library.sections.find(section=>section.id===target.id);
+  return !!selected && equal(target.kind==="idea" && !("blocks" in visible)?summarizeIdea(selected as Project):selected,visible);
+}
+export async function prepareTarget(scope:string,target:SyncTarget,visible?:Project|IdeaSummary|Section,viewBase?:ScopedRead) {
   const pending=await readScopedEntry(scope,target);
   if(pending)return {entry:pending,library:assembleLibrary(pending.local)};
-  if(target.kind==="idea" && visible?.id===target.id) {
-    const document=await readReaderCache<{editBase?:ScopedRead}>(scope,"idea",target.id).catch(()=>undefined);
+  if(target.kind!=="section-tree" && visible?.id===target.id) {
+    const document=target.kind==="idea"?await readReaderCache<{editBase?:ScopedRead}>(scope,"idea",target.id).catch(()=>undefined):undefined;
     const cached=await readReaderCache<ScopedRead>(scope,"idea",cacheId(target)).catch(()=>undefined);
     for(const base of [viewBase,document?.editBase,cached])if(base)try{
       if(!equal(base.target,target))continue;
       const local=validateRead(base,{},{}).remote,library=assembleLibrary(local);
       // A matching visible snapshot is a causal edit base, not permission to overwrite the cloud.
-      if(!equal(library.projects.find(idea=>idea.id===target.id),visible))continue;
+      if(!matchesVisibleTarget(library,target,visible))continue;
       const entry:ScopedEntry={scope,target,sequence:0,base,local};
       if(!scopedPlan(entry,base).conflicts.length)return {entry,library};
     }catch{/* Invalid or mismatched cached baselines fall back to the authoritative read. */}
@@ -51,6 +56,7 @@ export async function prepareTarget(scope:string,target:SyncTarget,visible?:impo
     if(navigator.onLine!==false && !(error instanceof ScopedError && error.code==="NETWORK"))throw error;
     const cached=await readReaderCache<ScopedRead>(scope,"idea",cacheId(target));
     if(!cached)throw new ScopedError("OFFLINE","Для изменения этой идеи нужно подключение к интернету.");read=cached;
+    if(visible && !matchesVisibleTarget(assembleLibrary(validateRead(cached,{},{}).remote),target,visible))throw new ScopedError("OFFLINE","Для изменения этой идеи нужно подключение к интернету.");
     if(target.kind==="idea") {
       const document=await readReaderCache<{version:string}>(scope,"idea",target.id);
       const idea=assembleLibrary(validateRead(cached,{},{}).remote).projects.find(idea=>idea.id===target.id);
@@ -90,18 +96,53 @@ async function finish(entry:ScopedEntry,read:ScopedRead,base:EntityMap,committed
   await settleScoped(entry,read,values,idea?{idea,version:await versionOf(read,idea)}:undefined,committed);
   return {read,...(committed?.heads.length===1?{ownRevision:committed.heads[0]}:{})};
 }
+/** Existing ideas/sections use their causal base; new/noncanonical media use the merge path. */
+async function prepareOptimistic(entry:ScopedEntry) {
+  if(entry.target.kind==="section-tree" || !entry.base.heads.length)return null;
+  const key=entityKey(entry.target.kind,entry.target.id),before=validateRead(entry.base,{},{});
+  if(entry.base.index[key]?.length!==1 || !before.remote[key] || Object.values(before.variants).some(variants=>variants.length!==1))return null;
+  const local=structuredClone(entry.local),library=assembleLibrary(local);
+  const knownAssets=libraryAssets(assembleLibrary(before.remote));
+  for(const asset of libraryAssets(library).values()) {
+    const old=knownAssets.get(asset.id),match=/^([a-f0-9]{64})-([a-f0-9]{32})$/.exec(asset.id);
+    if(!old || !match || asset.size!==old.size || asset.mime!==old.mime)return null;
+    // Missing file bytes are fine for existing dependencies: the server validates membership.
+    parseCloudMedia({id:asset.id,sha256:match[1],md5:match[2],size:asset.size,mime:asset.mime});
+  }
+  // A view's edit base may omit media metadata. Retained media records are dependencies, not changes.
+  const changes:EntityChange[]=[];
+  for(const key of new Set([...Object.keys(before.remote),...Object.keys(local)])) {
+    if(keyParts(key).kind==="media")continue;
+    const value=local[key] || null;
+    if(equal(value,before.remote[key] || null))continue;
+    if(entry.base.index[key] && entry.base.index[key].length!==1)return null;
+    changes.push({key,value,base:entry.base.index[key] || []});
+  }
+  if(!changes.length)return null;
+  const operation={sequence:entry.sequence,before:entry.local,values:local,read:entry.base,optimistic:true,body:{operationId:crypto.randomUUID(),heads:entry.base.heads,changes}};
+  return await persistScopedOperation(entry,operation) ? operation : null;
+}
 export async function flushScoped(entry:ScopedEntry,choices:SyncChoices={},choiceIndex?:ScopedRead,progress:(message:string)=>void=()=>{},allowed:()=>boolean=()=>true,attempt=0):Promise<{plan:ScopedPlan}|{read:ScopedRead;ownRevision?:string}|{retry:boolean}> {
   if(!allowed())throw new ScopedError("SYNC_PAUSED","Синхронизация приостановлена.");
   if(attempt>3)throw new ScopedError("NETWORK","Запись изменилась на другом устройстве. Повтори синхронизацию.");
+  if(!entry.operation && !choiceIndex && !Object.keys(choices).length && attempt===0) {
+    const operation=await prepareOptimistic(entry);
+    if(operation)entry={...entry,operation};
+  }
   if(entry.operation) {
     try {
-      const saved=await scopedApi("/api/sync/scoped",entry.operation.body,"PUT");
+      const includeIdeas=Object.keys(entry.base.index).filter(key=>keyParts(key).kind==="idea").map(key=>keyParts(key).ids[0]);
+      const saved=await scopedApi("/api/sync/scoped",{...entry.operation.body,readBack:{target:entry.target,includeIdeas}},"PUT");
       if(typeof saved.revision!=="string" || !revisionPattern.test(saved.revision))throw new ScopedError("INVALID_DATA","Неполный ответ истории облака.");
       if(!allowed())throw new ScopedError("SYNC_PAUSED","Синхронизация приостановлена.");
       const index={...entry.operation.read.index};for(const change of entry.operation.body.changes)index[change.key]=[saved.revision];
       const committed:ScopedRead={target:entry.target,heads:[saved.revision],index,records:Object.entries(index).flatMap(([key,revisions])=>revisions.map(revision=>({key,revision,value:entry.operation!.values[key] || null})))};
-      const read=await readTarget(entry.target,entry.base);
-      return finish(entry,read,entry.operation.values,committed);
+      const read:ScopedRead=saved.read || await readTarget(entry.target,entry.base);
+      if(!equal(read.target,entry.target))throw new ScopedError("INVALID_DATA","Неполный ответ истории облака.");
+      validateRead(read,{},{});
+      const values=structuredClone(entry.operation.values);
+      if(entry.operation.optimistic)for(const record of read.records)if(keyParts(record.key).kind==="media" && !Object.hasOwn(values,record.key))values[record.key]=record.value;
+      return finish(entry,read,values,committed);
     } catch(error) {
       if(error instanceof ScopedError && error.code==="STALE_INDEX"){await clearScopedOperation(entry);entry={...entry,operation:undefined};}
       else throw error;
