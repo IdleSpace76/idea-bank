@@ -66,7 +66,8 @@ export function useLibraryReader(scope: string | undefined, enabled: boolean, ro
       if(document.visibilityState==="hidden" || navigator.onLine===false || Date.now()-lastWake.current<600000)return;
       lastWake.current=Date.now();refresh(true);
     };
-    const reconnect=()=>{setOnline(navigator.onLine!==false);lastWake.current=Date.now();refresh();};
+    // Cloud catch-up belongs to the controller: read after broker attachment, once.
+    const reconnect=()=>{setOnline(navigator.onLine!==false);lastWake.current=Date.now();if(!scope)refresh();};
     const visible=()=>{if(document.visibilityState==="visible")wake();};
     setOnline(navigator.onLine !== false);
     window.addEventListener("online",reconnect); window.addEventListener("offline",wake); window.addEventListener("focus",wake);

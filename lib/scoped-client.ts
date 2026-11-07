@@ -77,6 +77,11 @@ export function scopedLocal(entry:ScopedEntry,library:import("./ideas").Library)
 }
 async function canonicalLocal(entry:ScopedEntry,read:ScopedRead) {
   const library=assembleLibrary(entry.local),remote=validateRead(read,{},{}),files=Object.values(remote.remote).filter((value):value is CloudMedia=>!!value && "sha256" in value);
+  // Reader edit bases omit file records; canonical dependencies still carry their hashes.
+  for(const asset of libraryAssets(library).values()) {
+    const match=/^([a-f0-9]{64})-([a-f0-9]{32})$/.exec(asset.id);
+    if(match && !files.some(file=>file.id===asset.id))files.push(parseCloudMedia({id:asset.id,sha256:match[1],md5:match[2],size:asset.size,mime:asset.mime}));
+  }
   const checkpoint:SyncCheckpoint={version:2,scope:entry.scope,index:read.index,values:remote.remote,files,syncedAt:new Date().toISOString()};
   const sources=await localMedia(library,checkpoint),canonical=canonicalLibrary(library,sources);
   const local=flattenLibrary(canonical,sources.map(file=>({...file,id:contentId(file)})));
@@ -99,8 +104,12 @@ async function finish(entry:ScopedEntry,read:ScopedRead,base:EntityMap,committed
 /** Existing ideas/sections use their causal base; new/noncanonical media use the merge path. */
 async function prepareOptimistic(entry:ScopedEntry) {
   if(entry.target.kind==="section-tree" || !entry.base.heads.length)return null;
-  const key=entityKey(entry.target.kind,entry.target.id),before=validateRead(entry.base,{},{});
-  if(entry.base.index[key]?.length!==1 || !before.remote[key] || Object.values(before.variants).some(variants=>variants.length!==1))return null;
+  const before=validateRead(entry.base,{},{});
+  if(Object.values(before.variants).some(variants=>variants.length!==1))return null;
+  if(entry.target.kind!=="library") {
+    const key=entityKey(entry.target.kind,entry.target.id);
+    if(entry.base.index[key]?.length!==1 || !before.remote[key])return null;
+  }
   const local=structuredClone(entry.local),library=assembleLibrary(local);
   const knownAssets=libraryAssets(assembleLibrary(before.remote));
   for(const asset of libraryAssets(library).values()) {
@@ -148,9 +157,8 @@ export async function flushScoped(entry:ScopedEntry,choices:SyncChoices={},choic
       else throw error;
     }
   }
-  let read=await readTarget(entry.target,entry.base);
-  const canonical=await canonicalLocal(entry,read),extra=canonical.sources.map(contentId).filter(id=>!read.index[entityKey("media",id)]);
-  if(extra.length)read=await readTarget(entry.target,entry.base,extra);
+  const canonical=await canonicalLocal(entry,entry.base);
+  const read=await readTarget(entry.target,entry.base,[...new Set(canonical.sources.map(contentId))]);
   const plan=scopedPlan(entry,read,canonical.local);
   plan.sources=canonical.sources;
   const useChoices=choiceIndex && equal(choiceIndex.index,read.index) ? choices : {};

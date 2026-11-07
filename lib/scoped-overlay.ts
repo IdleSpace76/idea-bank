@@ -14,7 +14,8 @@ export async function overlayPage(scope:string,page:ReaderPage,options:ReaderQue
     }
   }
   const matches=(idea:IdeaSummary|null|undefined)=>!!idea && (!options.sectionId || idea.sectionId===options.sectionId) && (!options.query?.trim() || `${idea.name}\n${idea.description}`.toLowerCase().includes(options.query.trim().toLowerCase()));
-  for(const row of pending) {
+  const rows=pending.flatMap(row=>row.target.kind==="library" ? (row.deletedSections || []).map(id=>({...row,target:{kind:"section-tree" as const,id},section:null})) : [row]);
+  for(const row of rows) {
     if(row.target.kind!=="idea") {
       if(row.section)sections.set(row.section.id,row.section);
       else {
@@ -34,7 +35,7 @@ export async function overlayPage(scope:string,page:ReaderPage,options:ReaderQue
     ideas.delete(row.target.id);
     if(row.idea && matches(row.idea))ideas.set(row.idea.id,row.idea);
   }
-  return {...page,sections:[...sections.values()],ideas:[...ideas.values()].sort((a,b)=>Date.parse(b.updatedAt)-Date.parse(a.updatedAt)||a.id.localeCompare(b.id)),counts,total:Math.max(ideas.size,total)};
+  return {...page,...(pending.some(row=>row.target.kind==="library")?{nextCursor:null}:{}),sections:[...sections.values()],ideas:[...ideas.values()].sort((a,b)=>Date.parse(b.updatedAt)-Date.parse(a.updatedAt)||a.id.localeCompare(b.id)),counts,total:Math.max(ideas.size,total)};
 }
 export async function overlayIdea(scope:string,id:string) {
   const entries=(await readScopedIndex()).filter(row=>row.scope===scope);

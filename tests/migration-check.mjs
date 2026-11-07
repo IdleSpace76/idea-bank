@@ -39,7 +39,7 @@ try {
         if(url.pathname==="/api/catalog")return reply(await entities.catalog().readPage({limit:Number(url.searchParams.get("limit")||24),cursor:url.searchParams.get("cursor")||undefined,sectionId:url.searchParams.get("sectionId")||undefined,query:url.searchParams.get("q")||undefined}));
         if(url.pathname==="/api/catalog/media")return reply(await entities.catalog().readMedia(url.searchParams.get("id")));
         if(url.pathname.startsWith("/api/ideas/")){const result=await entities.catalog().readIdea(decodeURIComponent(url.pathname.split("/").pop()),request.headers()["if-none-match"]?.replaceAll('"',""));return result.notModified?route.fulfill({status:304,body:""}):reply(result);}
-        if(url.pathname==="/api/sync/scoped"){const body=request.postDataJSON();return reply(method==="POST"?await entities.readScoped(body.target,body.includeIdeas,body.includeMedia):await entities.save(body));}
+        if(url.pathname==="/api/sync/scoped"){const body=request.postDataJSON();return reply(method==="POST"?await entities.readScoped(body.target,body.includeIdeas,body.includeMedia):await entities.saveScoped(body));}
         if(url.pathname==="/api/sync"){
           if(method==="GET")return reply(await entities.status());
           if(method==="POST"){if(network.failFull)return reply({error:{message:"Full download unavailable"}},503);const body=request.postDataJSON();if((await entities.status()).requiresMigration&&!body.activate)return reply({error:{code:"MIGRATION_REQUIRED",message:"Требуется переход на новую синхронизацию."}},409);return reply(await entities.read(body.known));}
@@ -87,10 +87,39 @@ try {
     assert.equal(archived.projects[0].blocks[0].text,"Keep this text");await close(page);
     await expect.poll(async()=>(await state(page)).layout).toBeUndefined();
     // Reset is an explicit whole-library change; reload never resurrects the old backup.
-    await open(page);await page.getByRole("button",{name:"Очистить голову",exact:true}).click();await page.locator(".reset-library-confirm").click();
+    await open(page);const beforeReset=calls.length,resetRequests=[];
+    const trackReset=request=>resetRequests.push(new URL(request.url()).pathname);page.on("request",trackReset);
+    await page.getByRole("button",{name:"Очистить голову",exact:true}).click();
+    await expect(page.getByRole("dialog",{name:"Очистить голову?",exact:true})).toBeVisible();
+    assert.equal(calls.length,beforeReset,"Reset confirmation opens immediately without preparing the full library");
+    await page.locator(".reset-library-confirm").click();
     await expect(page.locator(".project-card")).toHaveCount(0);await phase(page,"synced");
     await page.reload();await expect(page.locator(".project-card")).toHaveCount(0);
+    page.off("request",trackReset);
+    assert.ok(!resetRequests.some(path=>path.startsWith("/examples/") || path.includes("/media/") || path.includes("/sync/media")),"Confirmed reset never prepares Example or downloads media originals");
     await context.close();
+
+    // Reset includes unloaded ideas and needs no original file or generated Example media.
+    const many=cloud(),bulk=structuredClone(seed),bytes=Buffer.from("Reset metadata-only attachment");
+    const file={id:"",sha256:createHash("sha256").update(bytes).digest("hex"),md5:createHash("md5").update(bytes).digest("hex"),size:bytes.length,mime:"image/png"};file.id=schema.contentId(file);
+    many.objects.set(`${many.storage.prefix}/media/${file.id}`,{body:bytes,type:file.mime,metadata:{sha256:file.sha256},md5:file.md5});
+    bulk.projects=Array.from({length:40},(_,n)=>({...structuredClone(seed.projects[0]),id:`bulk-${n}`,name:`Bulk ${n}`}));
+    bulk.projects.at(-1).blocks[0].media=[{id:file.id,name:"never-download.png",kind:"image",mime:file.mime,size:file.size}];
+    await many.entities().save({operationId:randomUUID(),heads:[],changes:Object.entries(schema.flattenLibrary(bulk,[file])).map(([key,value])=>({key,value,base:[]}))});
+    const bulkClient=await device(many,viewport);await phase(bulkClient.page,"synced");await open(bulkClient.page);
+    const bulkRequests=[],track=request=>bulkRequests.push(new URL(request.url()).pathname);bulkClient.page.on("request",track);
+    const beforeBulkReset=bulkClient.calls.length;
+    await bulkClient.page.getByRole("button",{name:"Очистить голову",exact:true}).click();
+    await expect(bulkClient.page.locator(".reset-library-confirm")).toBeVisible();assert.equal(bulkClient.calls.length,beforeBulkReset);
+    await bulkClient.page.locator(".reset-library-confirm").click();
+    await expect.poll(()=>bulkClient.calls.slice(beforeBulkReset).filter(call=>call.method==="PUT").length).toBe(1);
+    await phase(bulkClient.page,"synced");
+    const resetCalls=bulkClient.calls.slice(beforeBulkReset);
+    assert.deepEqual(resetCalls.map(call=>`${call.method} ${call.path}`),["POST /api/sync/scoped","PUT /api/sync/scoped"],"Reset of 40 ideas has one authoritative read and one resumable write, without status/token/catalog reloads");
+    await expect.poll(async()=>(await many.entities().catalog().readPage()).total).toBe(0);
+    assert.equal((await many.entities().catalog().readPage()).sections.length,0);
+    assert.ok(!bulkRequests.some(path=>path.startsWith("/examples/") || path.includes("/media/") || path.includes("/sync/media")),"Reset never downloads an unloaded attachment");
+    await bulkClient.page.reload();await expect(bulkClient.page.locator(".section-open")).toHaveCount(0);await bulkClient.context.close();
 
     // A local personal library never overwrites an existing cloud without the owner choosing a source.
     const modern=cloud();await modern.entities().save({operationId:randomUUID(),heads:[],changes:Object.entries(schema.flattenLibrary(seed)).map(([key,value])=>({key,value,base:[]}))});

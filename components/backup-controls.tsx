@@ -6,7 +6,8 @@ import { loadExampleMedia } from "@/lib/example-media";
 import { useEffect, useRef, useState } from "react";
 import { Download, Eraser, FileArchive, LoaderCircle, RotateCcw, Upload, X } from "lucide-react";
 import { demoLibrary, STORAGE_KEY, type Library } from "@/lib/ideas";
-import { createLibraryBackup, readLibraryBackup, restoreLibraryBackup,prepareLibraryImport,importLibraryBackup, type LibraryBackup,type LibraryImportPlan,type ImportChoice } from "@/lib/library-backup";
+import { createLibraryBackup, readLibraryBackup,prepareLibraryImport,importLibraryBackup, type LibraryBackup,type LibraryImportPlan,type ImportChoice } from "@/lib/library-backup";
+import { clearLibrary } from "@/lib/library-reset";
 
 function download(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob), link = document.createElement("a");
@@ -20,7 +21,7 @@ async function prepareExampleBackup(): Promise<LibraryBackup> {
   return { library: structuredClone(demoLibrary), files, createdAt: demoLibrary.projects[0].updatedAt, totalBytes: new TextEncoder().encode(JSON.stringify(demoLibrary)).length + [...files.values()].reduce((sum, file) => sum + file.size, 0) };
 }
 
-export function BackupControls({ scope, library, locked, readOnly, onBusyChange, onRestored, loadLibrary }: { scope?: string; library: Library; locked: boolean; readOnly: boolean; onBusyChange: (busy: boolean) => void; onRestored: (library: Library) => void; loadLibrary?: () => Promise<Library> }) {
+export function BackupControls({ scope, library, locked, readOnly, onBusyChange, onRestored, loadLibrary, onClear }: { scope?: string; library: Library; locked: boolean; readOnly: boolean; onBusyChange: (busy: boolean) => void; onRestored: (library: Library) => void; loadLibrary?: () => Promise<Library>; onClear?:(expected:Library)=>Promise<Library> }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false), [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -31,7 +32,7 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
   const [resetRequested, setResetRequested] = useState(false);
   const resetDialog = useRef<HTMLDialogElement>(null);
   const resetCancel = useRef<HTMLButtonElement>(null);
-  const resetBase = useRef<Library | null>(null);
+  const resetBase = useRef<Library|null>(null);
   const active = useRef(false);
   const previewBase = useRef<Library | null>(null);
   useEffect(() => {
@@ -40,7 +41,7 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
     dialog?.showModal(); resetCancel.current?.focus();
     return () => dialog?.close();
   }, [resetRequested]);
-  function closeReset() { resetDialog.current?.close(); setResetRequested(false); resetBase.current = null; }
+  function closeReset() { resetDialog.current?.close(); setResetRequested(false); }
   function begin(message: string) { if (active.current || locked) return false; active.current = true; setBusy(true); onBusyChange(true); setStatus(message); setError(""); return true; }
   function finish() { active.current = false; setBusy(false); onBusyChange(false); }
   async function exportZip() {
@@ -84,20 +85,13 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
     } catch { setPreview(null); setError(t("Не удалось загрузить медиа Example. Проверь соединение и попробуй ещё раз.")); }
     finally { finish(); }
   }
-  async function requestReset() {
-    if (!loadLibrary) { resetBase.current=structuredClone(library);setResetRequested(true);return; }
-    if (!begin(t("Подготавливаем медиа…"))) return;
-    try { resetBase.current=structuredClone(await loadLibrary());setResetRequested(true); }
-    catch(reason) { setError(reason instanceof Error?reason.message:String(reason)); }
-    finally { finish(); }
-  }
+  function requestReset() { if(!active.current && !locked && !readOnly){resetBase.current=structuredClone(library);setResetRequested(true);} }
   /** Clearing is the only backup action that removes every idea and section. */
   async function resetLibrary() {
-    if (readOnly || !resetBase.current || !begin(t("Очищаем библиотеку…"))) return;
-    const base = resetBase.current;
+    if (readOnly || !begin(t("Очищаем библиотеку…"))) return;
     closeReset(); setPreview(null); setImportPlan(null);setExamplePreview(false);
-    try { const next = await restoreLibraryBackup({library:{version:1,sections:[],projects:[]},files:new Map(),createdAt:new Date().toISOString(),totalBytes:0},base); onRestored(next); }
-    catch (reason) { setStatus(""); setError(reason instanceof Error ? reason.message : t("Не удалось очистить рабочее пространство. Прежняя библиотека сохранена.")); }
+    try { const next = await (onClear?onClear(resetBase.current!):clearLibrary(undefined,resetBase.current!)); onRestored(next); }
+    catch (reason) { setStatus(""); setError(t("Не удалось очистить рабочее пространство. Прежняя библиотека сохранена.")+(reason instanceof Error?` ${reason.message}`:"")); }
     finally { finish(); }
   }
   return <section className="backup-controls" aria-labelledby="backup-title" aria-busy={busy}>

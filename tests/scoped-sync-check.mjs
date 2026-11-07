@@ -171,6 +171,15 @@ try {
   const sharedRevision=(await scopedState()).records.find(record=>record.key===entityKey("block","a","one")).revision;
   assert.equal(packets.slice(sharedStart).filter(packet=>packet.state===a.state && packet.input.observe?.includes(sharedRevision)).length,1,"Both windows observe one server-confirmed broker packet");
   await twin.close();
+  // A real broker disconnect and browser online event must share a single catch-up packet.
+  await setOffline(a,true);await expect.poll(()=>[...sockets].filter(socket=>socket.attached).length).toBe(1);
+  const missedBase=await scopedState(),missedKey=entityKey("block","a","one"),missedValue=missedBase.records.find(record=>record.key===missedKey).value;
+  const missedBlock={...missedValue,text:"Caught up after offline"};delete missedBlock.richText;
+  await fixture.entities().save({operationId:randomUUID(),heads:missedBase.heads,changes:[{key:missedKey,base:missedBase.index[missedKey],value:missedBlock}]});
+  const reconnectStart=packets.length;
+  await setOffline(a,false);await expect(a.page.getByText("Caught up after offline",{exact:true})).toBeVisible({timeout:15000});
+  await expect.poll(()=>[...sockets].filter(socket=>socket.attached).length).toBe(2);await delay(2000);
+  assert.equal(packets.slice(reconnectStart).filter(packet=>packet.state===a.state).length,1,"Online and Ably ready produce one reader packet, including missed changes");
   assert.equal(calls.filter(call=>call.url==="/api/sync").length,0);assert.equal(calls.filter(call=>call.url==="/api/ideas/b").length,0);
   assert.ok(!batches.some(batch=>batch.changes.some(change=>schema.keyParts(change.key).ids[0]==="b")),"Closed ideas are never rewritten");
   assert.equal(errors.length,0,errors.join("\n"));for(const device of [a,b]){assert.ok(await device.page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await device.context.close();}

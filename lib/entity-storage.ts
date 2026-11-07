@@ -19,6 +19,7 @@ export class EntityStorage {
   private manifests = new Map<string, Manifest>();
   private legacyParents = new Map<string,string[]>();
   private catalogGraph?: Graph;
+  private legacyLock?: Promise<void>;
   constructor(readonly storage: B2Storage) { this.prefix = `${storage.prefix}/sync-v2`; }
   catalog() { return new CatalogStorage(this); }
   private versionKey(key: string, revision: string) { return `${this.prefix}/records/${hash(key)}/${revision}.json`; }
@@ -42,6 +43,10 @@ export class EntityStorage {
   /** A checked immutable write can satisfy the post-commit read without another GET. */
   private rememberWritten(key:string,value:unknown) {
     if(key.startsWith(`${this.prefix}/indexes/`) || key.startsWith(`${this.prefix}/records/`))rememberStorageValue(this.storage,key,value);
+  }
+  /** One verified migration marker per request, with failures eligible for retry. */
+  private ensureLegacyLock() {
+    return this.legacyLock ||= this.putImmutable(`${this.prefix}/legacy-lock.json`, { format: "idea-bank-sync-v2" }).catch(error=>{this.legacyLock=undefined;throw error;});
   }
   async graph(): Promise<Graph> {
     const graph: Graph = new Map(), prefix = `${this.prefix}/indexes/`;
@@ -155,7 +160,7 @@ export class EntityStorage {
     const legacy = await this.storage.listRevisions();
     this.legacyParents = new Map([...legacy.revisions].map(([id,entry])=>[id,entry.parents]));
     if (!legacy.revisions.size) return;
-    await this.putImmutable(`${this.prefix}/legacy-lock.json`, { format: "idea-bank-sync-v2" });
+    await this.ensureLegacyLock();
     const graph = await this.graph();
     for (const id of legacy.heads) {
       if ([...graph.values()].some(entry => entry.legacy === id)) continue;
@@ -277,7 +282,7 @@ export class EntityStorage {
   }
   /** Read one edit/conflict domain. Unrelated idea bodies never leave storage. */
   private validateTarget(target: SyncTarget, includeIdeas: string[], includeMedia: string[]) {
-    if (!target || !["idea","section","section-tree"].includes(target.kind) || typeof target.id!=="string" || !target.id || target.id.length>200 || !Array.isArray(includeIdeas) || includeIdeas.length>10000 || includeIdeas.some(id=>typeof id!=="string" || !id || id.length>200)) return invalid();
+    if (!target || !["idea","section","section-tree","library"].includes(target.kind) || typeof target.id!=="string" || !target.id || target.id.length>200 || !Array.isArray(includeIdeas) || includeIdeas.length>10000 || includeIdeas.some(id=>typeof id!=="string" || !id || id.length>200)) return invalid();
     if(!Array.isArray(includeMedia) || includeMedia.length>10000 || includeMedia.some(id=>typeof id!=="string" || !/^[a-f0-9]{64}-[a-f0-9]{32}$/.test(id)))return invalid();
   }
   async readScoped(target: SyncTarget, includeIdeas: string[] = [],includeMedia:string[]=[]): Promise<ScopedRead> {
@@ -296,10 +301,11 @@ export class EntityStorage {
     if(target.kind==="section")await load(entityKey("section",target.id));
     else {
       for(const key of Object.keys(source.index))if(keyParts(key).kind==="section")await load(key);
-      if(target.kind==="section-tree") {
-        await load(entityKey("section",target.id));
+      if(target.kind==="section-tree" || target.kind==="library") {
+        if(target.kind==="section-tree")await load(entityKey("section",target.id));
         const keys=Object.keys(source.index).filter(key=>keyParts(key).kind==="idea");
-        for(let n=0;n<keys.length;n+=12)await Promise.all(keys.slice(n,n+12).map(async key=>{
+        if(target.kind==="library")for(const key of keys)ideas.add(keyParts(key).ids[0]);
+        else for(let n=0;n<keys.length;n+=12)await Promise.all(keys.slice(n,n+12).map(async key=>{
           const values=await Promise.all(source.index[key].map(id=>this.version(key,id)));
           if(values.some(record=>[record.value,...(record.previous || [])].some(value=>value && "sectionId" in value && value.sectionId===target.id)))ideas.add(keyParts(key).ids[0]);
         }));
@@ -334,7 +340,7 @@ export class EntityStorage {
     const parents = [...value.heads].sort(), digest = hash(stable({ parents, changes }));
     const revision = this.identity(`${value.operationId}:${digest}`);
     await this.migrateLegacy();
-    await this.putImmutable(`${this.prefix}/legacy-lock.json`, { format: "idea-bank-sync-v2" });
+    await this.ensureLegacyLock();
     const graph = await this.graph();
     if (graph.has(revision)) { if ((await this.manifest(revision,graph)).digest !== digest) throw new StorageError(409,"OPERATION_REUSED","Идентификатор операции уже использован."); await this.catalog().publish(revision,parents); return { revision }; }
     const current = await this.index(this.heads(graph),graph), index = await this.index(parents,graph);

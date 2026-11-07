@@ -1,10 +1,10 @@
 import type { EntityMap, EntityRead,EntityIndex } from "./entity-sync";
 import type { IdeaSummary, Section } from "./ideas";
-export type SyncTarget = { kind: "idea" | "section" | "section-tree"; id: string };
+export type SyncTarget = { kind: "idea" | "section" | "section-tree" | "library"; id: string };
 export type ScopedRead = EntityRead & { target: SyncTarget };
 export type IdeaEditVersions = {heads:string[];index:EntityIndex;section:Section};
 export type ScopedOperation = { sequence: number; before: EntityMap; values: EntityMap; read:ScopedRead; optimistic?:boolean; files?:{source:string;file:import("./cloud-library").CloudMedia}[]; body: { operationId: string; heads: string[]; changes: import("./entity-sync").EntityChange[] } };
 export type ScopedEntry = { scope: string; target: SyncTarget; sequence: number; base: ScopedRead; local: EntityMap; operation?: ScopedOperation; creationParent?:Section };
-export type ScopedSummary = { key: string; scope: string; target: SyncTarget; sequence: number; before?: IdeaSummary | null; idea?: IdeaSummary | null; section?: Section | null; deletedIds: string[] };
+export type ScopedSummary = { key: string; scope: string; target: SyncTarget; sequence: number; before?: IdeaSummary | null; idea?: IdeaSummary | null; section?: Section | null; deletedIds: string[]; deletedSections?:string[] };
 export const targetKey = (scope: string, target: SyncTarget) => `scoped-pending:${JSON.stringify([scope,target.kind,target.id])}`;
 export const editCacheId=(target:SyncTarget)=>`edit:${target.kind}:${target.id}`;

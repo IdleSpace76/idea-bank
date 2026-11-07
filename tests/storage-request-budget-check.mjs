@@ -141,14 +141,15 @@ try {
 }finally{empty.storage.client.destroy();storageCache.clearStorageReadCache();}
 
 // Measure real cold HTTP request boundaries, including causal validation and the fresh acknowledgement.
-for(const count of [1,12]) {
+for(const [count,legacy] of [[1,false],[12,false],[1,true]]) {
   const fixture=memoryStorage(),commands=[],send=fixture.storage.client.send.bind(fixture.storage.client);
   fixture.storage.client.send=async command=>{commands.push({name:command.constructor.name,key:command.input.Key || command.input.Prefix});return send(command);};
   const perform=async work=>{const storage=new B2Storage({...fixture.storage.settings});storage.client.send=fixture.storage.client.send;try{return await work(new EntityStorage(storage));}finally{storage.client.destroy();}};
   try {
     const idea={id:"i",sectionId:"s",name:"Idea",description:"",cover:"forest",updatedAt:"2026-01-01T00:00:00Z",blocks:Array.from({length:count},(_,n)=>({id:`b${n}`,heading:"Heading",text:`Text ${n}`}))};
     const library={version:1,sections:[{id:"s",name:"Section",description:"",icon:"folder"}],projects:[idea]};
-    await perform(entities=>entities.save({operationId:randomUUID(),heads:[],changes:Object.entries(schema.flattenLibrary(library)).map(([key,value])=>({key,value,base:[]}))}));
+    if(legacy){await fixture.storage.saveLibrary({baseRevisions:[],library,media:[]});await perform(entities=>entities.migrateLegacy());}
+    else await perform(entities=>entities.save({operationId:randomUUID(),heads:[],changes:Object.entries(schema.flattenLibrary(library)).map(([key,value])=>({key,value,base:[]}))}));
     const base=await perform(entities=>entities.readScoped({kind:"idea",id:"i"}));
     const values=schema.flattenLibrary({...library,projects:[{...idea,updatedAt:"2026-01-02T00:00:00Z",blocks:idea.blocks.map((block,n)=>n===0?{...block,text:"Changed"}:block)}]});
     const changes=Object.entries(values).filter(([key,value])=>!schema.equal(value,base.records.find(record=>record.key===key)?.value)).map(([key,value])=>({key,value,base:base.index[key] || []}));
@@ -156,11 +157,12 @@ for(const count of [1,12]) {
     const saved=await perform(entities=>entities.saveScoped({operationId:randomUUID(),heads:base.heads,changes,readBack:{target:base.target}}));
     const gets=commands.filter(c=>c.name==="GetObjectCommand").length;
     assert.equal(gets,count+7,`A cold ${count}-block save has a fixed checked-write budget, not repeated record reads`);
+    assert.equal(commands.filter(c=>c.name==="GetObjectCommand" && c.key.endsWith("/legacy-lock.json")).length,1,"Migration and save share one real marker check per request");
     for(const change of changes) {
       const suffix=`/records/${createHash("sha256").update(change.key).digest("hex")}/${saved.revision}.json`;
       assert.equal(commands.filter(c=>c.name==="GetObjectCommand" && c.key.endsWith(suffix)).length,1,"Keep the pre-write existence check and eliminate the post-write download");
     }
     assert.equal(saved.read.records.find(record=>record.key===schema.entityKey("block","i","b0")).value.text,"Changed");
-    console.log(`Cold save budget (${count} blocks, text + date changed): ${gets} GET + ${commands.filter(c=>c.name==="HeadObjectCommand").length} HEAD; no re-download after writing.`);
+    console.log(`Cold save budget (${count} blocks${legacy?", migrated library":""}, text + date changed): ${gets} GET + ${commands.filter(c=>c.name==="HeadObjectCommand").length} HEAD; no re-download after writing.`);
   }finally{fixture.storage.client.destroy();storageCache.clearStorageReadCache();}
 }

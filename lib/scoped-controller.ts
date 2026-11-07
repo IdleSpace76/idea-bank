@@ -17,6 +17,9 @@ export class ScopedSyncController {
   private cloudRefreshPending=false;
   private safetyRefreshPending=false;
   private connectedOnce=false;
+  private eventsReady=false;
+  private reconnectTimer:ReturnType<typeof setTimeout>|null=null;
+  private reconnectPending=false;
   private seen=new Set<string>();
   private deferredRevisions=new Set<string>();
   private refreshRevisions=new Set<string>();
@@ -26,23 +29,33 @@ export class ScopedSyncController {
   private patch(value:Partial<SyncView>){this.view={...this.view,...value};for(const listener of this.listeners)listener();}
   private schedule(delay:number,invalidate=false){if(this.stopped || document.visibilityState==="hidden")return;if(this.timer)clearTimeout(this.timer);this.timer=setTimeout(()=>{this.timer=null;if(invalidate){if(!this.cloudRefreshPending)this.safetyRefreshPending=true;this.refreshPending=true;this.cloudRefreshPending=true;}void this.check(false,undefined,true);},Math.max(delay,cloudBackoffRemaining()));}
   private refresh(afterBatch=false,localOnly=false){if(!localOnly){this.cloudRefreshPending=true;this.safetyRefreshPending=false;}if(this.running && !afterBatch){this.refreshPending=true;return;}if(this.options.canRun()){this.refreshPending=false;const local=!this.cloudRefreshPending,safety=this.safetyRefreshPending,revisions=[...this.refreshRevisions];this.cloudRefreshPending=false;this.safetyRefreshPending=false;this.refreshRevisions.clear();this.options.refresh(local,!local&&safety,!local&&revisions.length?revisions:undefined);}else this.refreshPending=true;}
+  private cancelReconnect(){if(this.reconnectTimer)clearTimeout(this.reconnectTimer);this.reconnectTimer=null;this.reconnectPending=false;}
+  private catchUp(){this.cancelReconnect();this.refreshPending=true;this.cloudRefreshPending=true;this.refreshRevisions.clear();this.safetyRefreshPending=false;this.schedule(250);}
   start(){
     if(!this.stopped)return;this.stopped=false;this.generation++;
     const wake=()=>{if(document.visibilityState==="hidden"){if(this.timer)clearTimeout(this.timer);this.timer=null;return;}if(navigator.onLine===false)this.patch({phase:"offline"});else{if(this.view.phase==="auth")this.patch({phase:"waiting"});this.schedule(100);}};
-    const offline=()=>{if(this.timer)clearTimeout(this.timer);this.timer=null;if(!this.running)this.patch({phase:"offline",status:"Нет сети. Изменения сохранены на устройстве."});};
+    const offline=()=>{this.cancelReconnect();this.eventsReady=false;if(this.timer)clearTimeout(this.timer);this.timer=null;if(!this.running)this.patch({phase:"offline",status:"Нет сети. Изменения сохранены на устройстве."});};
+    const reconnect=()=>{
+      if(this.stopped || document.visibilityState==="hidden" || navigator.onLine===false)return;
+      if(this.eventsReady){this.catchUp();return;}
+      if(this.reconnectPending)return;
+      this.reconnectPending=true;
+      // Cached UI stays usable; a missing broker cannot prevent network recovery.
+      this.reconnectTimer=setTimeout(()=>this.catchUp(),1500);
+    };
     const unsubscribe=subscribeScoped(scope=>{if(scope===this.scope){if(this.view.phase!=="conflict" && !this.running){this.patch({phase:navigator.onLine===false?"offline":"waiting"});this.schedule(1200);}}});
-    window.addEventListener("online",wake);window.addEventListener("offline",offline);window.addEventListener("focus",wake);document.addEventListener("visibilitychange",wake);
+    window.addEventListener("online",reconnect);window.addEventListener("offline",offline);window.addEventListener("focus",wake);document.addEventListener("visibilitychange",wake);
     this.events=new SyncEventsClient({onRevision:revision=>{
       if(this.stopped || this.seen.has(revision))return;this.seen.add(revision);while(this.seen.size>512)this.seen.delete(this.seen.values().next().value!);
       // The broker can echo our PUT before its HTTP response arrives.
       if(this.running){this.seen.delete(revision);this.deferredRevisions.add(revision);while(this.deferredRevisions.size>512)this.deferredRevisions.delete(this.deferredRevisions.values().next().value!);return;}
       this.refreshRevisions.add(revision);while(this.refreshRevisions.size>512)this.refreshRevisions.delete(this.refreshRevisions.values().next().value!);
       this.refreshPending=true;this.cloudRefreshPending=true;this.safetyRefreshPending=false;this.schedule(250);
-    },onConnection:ready=>{if(ready){if(!this.connectedOnce){this.connectedOnce=true;return;}this.refreshPending=true;this.cloudRefreshPending=true;this.refreshRevisions.clear();this.safetyRefreshPending=false;this.schedule(250);}else if(!this.running)this.schedule(600000);}});
-    this.events.start();this.cleanup=()=>{unsubscribe();window.removeEventListener("online",wake);window.removeEventListener("offline",offline);window.removeEventListener("focus",wake);document.removeEventListener("visibilitychange",wake);};
+    },onConnection:ready=>{this.eventsReady=ready;if(ready){const first=!this.connectedOnce;this.connectedOnce=true;if(!first || this.reconnectPending)this.catchUp();}else if(!this.running)this.schedule(600000);}});
+    this.events.start();this.cleanup=()=>{unsubscribe();window.removeEventListener("online",reconnect);window.removeEventListener("offline",offline);window.removeEventListener("focus",wake);document.removeEventListener("visibilitychange",wake);};
     if(navigator.onLine===false)offline();else this.schedule(100);
   }
-  stop(){this.stopped=true;this.generation++;if(this.timer)clearTimeout(this.timer);this.timer=null;this.events?.stop();this.events=null;this.cleanup?.();this.cleanup=null;}
+  stop(){this.stopped=true;this.generation++;this.cancelReconnect();if(this.timer)clearTimeout(this.timer);this.timer=null;this.events?.stop();this.events=null;this.cleanup?.();this.cleanup=null;}
   contextChanged(){if(this.options.canRun() && !["conflict","auth","error"].includes(this.view.phase)){if(this.refreshPending)this.refresh(false,true);this.schedule(1200);}}
   review(plan:ScopedPlan){this.patch({phase:"conflict",plan,error:"",busy:false});}
   resolve=async(plan:EntityPlan,choices:SyncChoices={})=>{

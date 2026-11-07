@@ -53,7 +53,7 @@ function summary(entry:ScopedEntry):ScopedSummary {
   const key=entityKey(entry.target.kind==="idea"?"idea":"section",entry.target.id);
   const before=entry.base.records.find(record=>record.key===key)?.value;
   return {key:targetKey(entry.scope,entry.target),scope:entry.scope,target:entry.target,sequence:entry.sequence,
-    ...(entry.target.kind==="idea"?{before:before?summarizeIdea(before as IdeaSummary):null,idea:entry.local[key]?summarizeIdea(entry.local[key] as IdeaSummary):null}:{section:entry.local[key] as Section|null}),
+    ...(entry.target.kind==="library"?{deletedSections:Object.entries(entry.local).filter(([key,value])=>key.startsWith("section:") && !value).map(([key])=>JSON.parse(key.slice(8))[0])}:entry.target.kind==="idea"?{before:before?summarizeIdea(before as IdeaSummary):null,idea:entry.local[key]?summarizeIdea(entry.local[key] as IdeaSummary):null}:{section:entry.local[key] as Section|null}),
     deletedIds:Object.entries(entry.local).filter(([key,value])=>key.startsWith("idea:") && !value).map(([key])=>JSON.parse(key.slice(5))[0])};
 }
 export async function queueScoped(scope:string,target:SyncTarget,base:ScopedRead,local:EntityMap,expectedSequence:number,creationParent?:Section) {
@@ -63,6 +63,7 @@ export async function queueScoped(scope:string,target:SyncTarget,base:ScopedRead
     const index=await request<ScopedSummary[]>(meta.get(indexKey)) || [];
     for(const other of index.filter(row=>row.scope===scope && row.key!==key)) {
       const idea=local[entityKey("idea",target.id)] as {sectionId:string}|null;
+      if(target.kind==="library" || other.target.kind==="library" && (other.deletedIds.includes(target.id) || (other.deletedSections || []).includes(idea?.sectionId || target.id)))throw new Error("Сначала завершите синхронизацию и разрешите конфликты.");
       if(other.target.kind==="section-tree" && (!other.section && (idea?.sectionId===other.target.id || other.deletedIds.includes(target.id))) || target.kind==="section-tree" && other.idea?.sectionId===target.id)throw new Error("Сначала завершите синхронизацию и разрешите конфликты.");
     }
     const sequence=(await request<number>(meta.get("scoped-sequence")) || 0)+1;
@@ -102,7 +103,9 @@ export async function settleScoped(entry:ScopedEntry,read:ScopedRead,values:Enti
     const meta=tx.objectStore("meta"),key=targetKey(entry.scope,entry.target),current=await request<ScopedEntry|undefined>(meta.get(key));
     if(!current)return;
     await advanceReaderEpochIn(tx,entry.scope);
-    await settleReaderPagesIn(tx,entry.scope,summary({...entry,local:values}),revision,read.index);
+    // A reset acknowledges the whole read-back domain, including concurrent additions that survived merging.
+    const rows=entry.target.kind==="library" ? Object.keys(values).filter(key=>key.startsWith("idea:") || key.startsWith("section:")).sort((a,b)=>a.localeCompare(b)).map(key=>summary({...entry,target:{kind:key.startsWith("idea:")?"idea":"section",id:JSON.parse(key.slice(key.indexOf(":")+1))[0]},local:values})) : summary({...entry,local:values});
+    await settleReaderPagesIn(tx,entry.scope,rows,revision,read.index);
     const counter=(await request<number>(meta.get("scoped-confirmed-counter")) || 0)+1;
     const deletions=await request<Deletion[]>(meta.get("scoped-deletions")) || [];
     for(const [key,value] of Object.entries(values)) {

@@ -499,5 +499,6 @@ export const english: Record<string, string> = {
   "Озеро": "Lake",
   "Блокнот": "Notebook",
   "Сумерки": "Twilight",
-  "Песок": "Sand"
+  "Песок": "Sand",
+  "Для очистки облачной библиотеки нужно подключение к интернету.": "Connect to the internet to clear the cloud library."
 };

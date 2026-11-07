@@ -22,6 +22,7 @@ import { useLibraryReader } from "./use-library-reader";
 import { useBlockDraft } from "./use-block-draft";
 import type { BlockDraft } from "@/lib/block-drafts";
 import { applyVisibleEdit, preserveUnchangedIdeaDates } from "@/lib/library-edit";
+import { clearLibrary } from "@/lib/library-reset";
 import { SyncStatus } from "./sync-status";
 import { equal } from "@/lib/entity-sync";
 import { initializeLocalLibrary, readLocalLibrary, readMeta, readOutbox, retireCloudReplica, saveLocalLibrary, subscribeLocalChanges } from "@/lib/library-store";
@@ -216,7 +217,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
     void retireCloudReplica(cloudScope).catch(()=>{/* Cleanup is optional; a failed transaction keeps the old replica intact. */});
   },[cloudScope,legacySession,readerLocked,reader.main.source,reader.main.page,reader.main.loading,reader.main.error]);
 
-  /** Whole-library operations only: legacy migration, ZIP and explicit reset. */
+  /** Full materialization is reserved for legacy migration and ZIP operations. */
   async function prepareFull(allowReview=false,ownedBackup=false): Promise<Library> {
     if(draft || savingRef.current&&!ownedBackup || bridgeRef.current)throw new Error(t("Сначала сохрани или отмени редактирование и дождись завершения других операций."));
     bridgeRef.current=true;savingRef.current=true;setSaving(true);
@@ -272,14 +273,14 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
     try{await prepareEdit(target,false,false);reader.refresh();}catch(error){setStorageError(error instanceof Error?error.message:String(error));}
   }
   async function openModal(next: Modal) {
-    if(next.type==="new-section" || next.type==="new-project") {
+    if(next.type==="new-section" || next.type==="new-project" || next.type==="delete-section") {
       if(draft || savingRef.current || bridgeRef.current) {setStorageError(t("Сначала сохрани или отмени редактирование и дождись завершения других операций."));return;}
       setModal(next);return;
     }
     if(next.type==="storage-info" && cloudScope&&!legacySession){setModal(next);return;}
     if(next.type==="storage-info" && (draft || readOnly || savingRef.current || importingRef.current)) {setModal(next);return;}
     try {
-      const target:SyncTarget="project" in next?{kind:"idea",id:next.project.id}:"section" in next?{kind:next.type==="delete-section"?"section-tree":"section",id:next.section.id}:{kind:"section",id:"unused"};
+      const target:SyncTarget="project" in next?{kind:"idea",id:next.project.id}:"section" in next?{kind:"section",id:next.section.id}:{kind:"section",id:"unused"};
       const full=next.type==="storage-info"?await prepareFull(true):await prepareEdit(target);
       if("project" in next) {
         const project=full.projects.find(idea=>idea.id===next.project.id);
@@ -428,9 +429,21 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
   async function discardDraft(){try{await blockDraft.discard();setDraftReview(null);}catch(reason){setStorageError(t((reason as Error).message));await blockDraft.discover();}}
 
   async function removeSection(section: Section) {
-    if (!await commit({ ...library, sections: library.sections.filter(s => s.id !== section.id), projects: library.projects.filter(p => p.sectionId !== section.id) }, t("Раздел удалён."))) return;
-    setModal(null);
-    if (currentSection?.id === section.id) navigate({ screen: "home" });
+    try {
+      const base=await prepareEdit({kind:"section-tree",id:section.id});
+      if (!await commit({ ...base, sections: base.sections.filter(s => s.id !== section.id), projects: base.projects.filter(p => p.sectionId !== section.id) }, t("Раздел удалён."))) return;
+      setModal(null);
+      if (currentSection?.id === section.id) navigate({ screen: "home" });
+    }catch(reason){setStorageError(reason instanceof Error?reason.message:String(reason));}
+  }
+
+  async function clearBank(expected:Library):Promise<Library> {
+    bridgeRef.current=true;
+    try {
+      if(cloudScope && !legacySession && (await readScopedIndex()).some(row=>row.scope===cloudScope))await scoped.controller?.check(false,undefined,true);
+      const next=await clearLibrary(cloudScope,cloudScope?undefined:expected,legacySession);
+      return next;
+    }finally{bridgeRef.current=false;}
   }
 
   async function removeProject(project: Project) {
@@ -541,7 +554,7 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
       <footer className="app-footer"><span><LockKeyhole />{t("Личная библиотека")}</span><button onClick={() => void openModal({ type: "storage-info" })}>{cloudScope ? t("Синхронизация и копии") : t("Локальная версия")} <ArrowUpRight /></button></footer>
     </div>
 
-    {modal && <Dialog title={modalTitle(modal)} closeDisabled={backupBusy} onClose={() => { if (!savingRef.current) setModal(null); }}>
+    {modal && <Dialog title={modalTitle(modal)} closeDisabled={backupBusy || saving} closeOnBackdrop={modal.type!=="new-project" && modal.type!=="new-section"} onClose={() => { if (!savingRef.current) setModal(null); }}>
       {modal.type === "new-section" || modal.type === "edit-section" ? <SectionForm section={modal.type === "edit-section" ? modal.section : undefined} onCancel={() => setModal(null)} onSave={async values => {
         const section: Section = modal.type === "edit-section" ? { ...modal.section, ...values } : { id: createId(), ...values };
         if(modal.type==="new-section" && !await prepareCreation({kind:"section",id:section.id}))return false;
@@ -561,8 +574,8 @@ export function IdeaBank({ account, cloudScope }: { account?: string; cloudScope
       : modal.type === "delete-section" ? <><p className="dialog-description">{t("Удалить «")}{modal.section.name}{t("»? Вместе с разделом будут удалены все его идеи (")}{projectCount(modal.section.id)}{t("). Это действие нельзя отменить.")}</p><div className="form-actions"><button className="secondary-button" onClick={() => setModal(null)}>{t("Отмена")}</button><button className="danger-button" onClick={() => removeSection(modal.section)}>{t("Удалить раздел")}</button></div></>
       : modal.type === "delete-project" ? <><p className="dialog-description">{t("Удалить «")}{modal.project.name}{t("» и все её текстовые блоки? Это действие нельзя отменить.")}</p><div className="form-actions"><button className="secondary-button" onClick={() => setModal(null)}>{t("Отмена")}</button><button className="danger-button" onClick={() => removeProject(modal.project)}>{t("Удалить идею")}</button></div></>
       : modal.type === "move-project" ? <div className="menu-options">{library.sections.map(s => <button disabled={s.id === modal.project.sectionId} key={s.id} onClick={async () => { const moved = { ...modal.project, sectionId: s.id, updatedAt: new Date().toISOString() }; if (await commit({ ...library, projects: library.projects.map(p => p.id === moved.id ? moved : p) }, t("Идея перенесена."))) setModal(null); }}><SectionSymbol icon={s.icon} /><span>{s.name}</span>{s.id === modal.project.sectionId && <Check />}</button>)}</div>
-      : <><div className="storage-info-icon"><Monitor /></div><p className="dialog-description">{t("Изменения сохраняются на устройстве и автоматически отправляются в подключённое облако. ZIP-копия позволяет сохранить отдельный архив библиотеки.")}</p><p className="dialog-description">{t("Облачное подключение доступно после входа владельца и настройки B2. Очистка данных сайта в браузере удалит локальную библиотеку и вложения.")}</p>{(legacySession ? automaticSync.controller : scoped.controller) && <CloudSyncControls controller={(legacySession ? automaticSync.controller : scoped.controller)!} view={syncView} library={fullLibrary || library} locked={!!draft || importingMedia || backupBusy || saving} readOnly={readOnly} />}<BackupControls loadLibrary={cloudScope && !legacySession ? () => prepareFull(true,true) : undefined} scope={cloudScope} library={fullLibrary || library} locked={!!draft || saving || importingMedia || backupBusy || syncView.busy} readOnly={readOnly} onBusyChange={busy => { savingRef.current = busy; setBackupBusy(busy); }} onRestored={next => {
-        setFullLibrary(next); fullRef.current=next; reader.refresh(); setReadOnly(false); setStorageError(""); setDraft(null); setPendingMedia(new Map()); setMediaError(""); setQuery(""); setSidebarQuery(""); setExpandedSections({});
+      : <><div className="storage-info-icon"><Monitor /></div><p className="dialog-description">{t("Изменения сохраняются на устройстве и автоматически отправляются в подключённое облако. ZIP-копия позволяет сохранить отдельный архив библиотеки.")}</p><p className="dialog-description">{t("Облачное подключение доступно после входа владельца и настройки B2. Очистка данных сайта в браузере удалит локальную библиотеку и вложения.")}</p>{(legacySession ? automaticSync.controller : scoped.controller) && <CloudSyncControls controller={(legacySession ? automaticSync.controller : scoped.controller)!} view={syncView} library={fullLibrary || library} locked={!!draft || importingMedia || backupBusy || saving} readOnly={readOnly} />}<BackupControls onClear={clearBank} loadLibrary={cloudScope && !legacySession ? () => prepareFull(true,true) : undefined} scope={cloudScope} library={fullLibrary || library} locked={!!draft || saving || importingMedia || backupBusy || syncView.busy} readOnly={readOnly} onBusyChange={busy => { savingRef.current = busy; setBackupBusy(busy); }} onRestored={next => {
+        setFullLibrary(next); fullRef.current=next; reader.refreshLocal(); setReadOnly(false); setStorageError(""); setDraft(null); setPendingMedia(new Map()); setMediaError(""); setQuery(""); setSidebarQuery(""); setExpandedSections({});
         setRoute({ screen: "home" }); history.replaceState(null, "", "#/"); setModal(null); setMessage(t("Библиотека обновлена.")); window.scrollTo({ top: 0, behavior: "instant" });
       }} /><button className="primary-button full-width" disabled={backupBusy} onClick={() => setModal(null)}>{t("Понятно")}</button></>}
     </Dialog>}

@@ -50,6 +50,8 @@ try {
   const added=fileFor("new media upload"),newAsset={...asset,id:"new-local-file",size:added.size};sources=[{...added,id:newAsset.id}];
   await exports.flushScoped(queue(await baseFor(),"New media",newAsset));
   assert.equal(calls[0].method,"POST");assert.ok(calls.some(call=>call.path==="/api/storage/media/upload"));
+  assert.deepEqual(calls.map(call=>call.method),["POST","POST","PUT"],"New media uses one domain read, one upload ticket and one write");
+  assert.deepEqual(calls[0].body.includeMedia,[added.id],"Hash locally before the only preliminary read");
   assert.ok(!operations.at(-1).optimistic);assert.equal(settled.document.idea.blocks[0].media[0].id,added.id);
   const current=await baseFor(),visible=summarizeIdea(assembleLibrary(schema.validateRead(current,{},{}).remote).projects[0]);
   cache.set("i",{editBase:current});calls.length=0;
@@ -62,5 +64,27 @@ try {
   const prepared=await exports.prepareTarget("fixture",sectionTarget,library.sections[0]);assert.equal(calls.length,0,"A known section edit base needs no repeated read");
   pending={...prepared.entry,sequence:2,local:{...prepared.entry.local,[entityKey("section","s")]:{...library.sections[0],description:"Changed section"}}};
   await exports.flushScoped(pending);assert.deepEqual(calls.map(call=>call.method),["PUT"],"A section update uses the same checked one-PUT path");
+  // A whole-library reset is one resumable scoped operation, never a compatibility sync.
+  const resetTarget={kind:"library",id:"all"},resetBase=await f.entities().readScoped(resetTarget);
+  const resetLocal=Object.fromEntries(Object.entries(schema.validateRead(resetBase,{},{}).remote).map(([key,value])=>[key,schema.keyParts(key).kind==="media"?value:null]));
+  pending={scope:"fixture",target:resetTarget,base:resetBase,local:resetLocal,sequence:3};calls.length=0;lose=true;
+  await assert.rejects(()=>exports.flushScoped(pending),error=>error.code==="NETWORK");
+  const resetOperation=pending.operation.body.operationId;
+  await exports.flushScoped(pending);
+  assert.deepEqual(calls.map(call=>call.method),["PUT","PUT"],"Lost reset responses retry the identical operation without another read");
+  assert.equal(calls.at(-1).body.operationId,resetOperation);assert.equal((await f.entities().catalog().readPage()).total,0);
+  const restore=async()=>{const state=await f.entities().read();await f.entities().save({operationId:randomUUID(),heads:state.heads,changes:Object.entries(flattenLibrary(library,[file])).map(([key,value])=>({key,value,base:state.index[key] || []}))});};
+  const resetEntry=async()=>{const base=await f.entities().readScoped(resetTarget);return {scope:"fixture",target:resetTarget,base,sequence:4,local:Object.fromEntries(Object.entries(schema.validateRead(base,{},{}).remote).map(([key,value])=>[key,schema.keyParts(key).kind==="media"?value:null]))};};
+  await restore();pending=await resetEntry();
+  const separate={version:1,sections:[{...library.sections[0],id:"new-section"}],projects:[{...library.projects[0],id:"new-idea",sectionId:"new-section",blocks:[]}]};
+  await f.entities().save({operationId:randomUUID(),heads:pending.base.heads,changes:Object.entries(flattenLibrary(separate)).map(([key,value])=>({key,value,base:[]}))});
+  calls.length=0;await exports.flushScoped(pending);
+  assert.equal(assembleLibrary(settled.values).projects[0].id,"new-idea","A concurrent independent addition survives reset and its local acknowledgement");
+  await restore();pending=await resetEntry();
+  const child={...library.projects[0],id:"concurrent-child",blocks:[]};
+  await f.entities().save({operationId:randomUUID(),heads:pending.base.heads,changes:Object.entries(flattenLibrary({version:1,sections:[],projects:[child]})).map(([key,value])=>({key,value,base:[]}))});
+  const resetConflict=await exports.flushScoped(pending);
+  assert.ok(resetConflict.plan?.conflicts.length,"A new child in a section being deleted requires explicit conflict resolution");
+  assert.ok((await f.entities().catalog().readPage()).ideas.some(idea=>idea.id===child.id),"A stale reset never silently deletes a concurrent child");
   console.log("Optimistic client checks passed: cached idea/section forms, one PUT, uncached media dependencies, stable lost-response retry, stale-version conflict and normal new-media upload path.");
 }finally{globalThis.fetch=originalFetch;f.storage.client.destroy();}

@@ -191,6 +191,9 @@ try {
     const beforeCreateDialogs=calls.length;
     for(const open of [()=>page.getByRole("button",{name:"Создать раздел",exact:true}).last().click(),()=>page.locator(".page-action-button").click()]) {
       await open();await expect(page.getByRole("dialog")).toBeVisible();
+      await page.getByRole("dialog").getByLabel("Название",{exact:true}).fill("Keep the dialog open");
+      await page.mouse.click(2,2);await expect(page.getByRole("dialog")).toBeVisible();
+      await expect(page.getByRole("dialog").getByLabel("Название",{exact:true})).toHaveValue("Keep the dialog open");
       await page.getByRole("dialog").getByRole("button",{name:"Отмена",exact:true}).click();
     }
     await delay(500);
@@ -238,7 +241,11 @@ try {
     await page.getByRole("button",{name:"Действия с идеей",exact:true}).click();await page.getByRole("menuitem",{name:"Удалить идею",exact:true}).click();
     await page.getByRole("dialog").getByRole("button",{name:"Удалить идею",exact:true}).click();
     await expect.poll(async()=> (await fixture.entities().catalog().readPage()).total).toBe(1000);
-    await home();await page.getByRole("button",{name:`Действия с разделом Temporary ${viewport.width}`,exact:true}).click();await page.getByRole("menuitem",{name:"Удалить раздел",exact:true}).click();
+    await home();await page.getByRole("button",{name:`Действия с разделом Temporary ${viewport.width}`,exact:true}).click();
+    const beforeDeleteConfirmation=calls.length;
+    await page.getByRole("menuitem",{name:"Удалить раздел",exact:true}).click();
+    await expect(page.getByRole("dialog",{name:"Удалить раздел?",exact:true})).toBeVisible();
+    assert.equal(calls.length,beforeDeleteConfirmation,"Opening section deletion confirmation performs no network request");
     await page.getByRole("dialog").getByRole("button",{name:"Удалить раздел",exact:true}).click();
     await expect.poll(async()=> (await fixture.entities().catalog().readPage()).sections.length).toBe(1);
     // A B2 denial keeps cached bodies visible and suspends reads and queued writes together.
