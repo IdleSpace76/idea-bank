@@ -1,6 +1,7 @@
 import { parseLibrary, type Project } from "./ideas";
 import { projectMediaIds } from "./media-store";
 import { request, transaction } from "./local-database";
+import {localDiskEnabled,readDiskDraft,writeDiskDraft,removeDiskDraft} from "./disk-client";
 
 export type BlockDraft = { version:1; revision:string; scope:string; id:string; base:Project; project:Project; files:[string,Blob][]; savedAt:string };
 const key=(scope:string,id:string)=>`block-draft:${JSON.stringify([scope,id])}`;
@@ -15,11 +16,13 @@ function checked(value:BlockDraft,scope:string,id:string):BlockDraft {
   return {...value,base,project};
 }
 export async function readBlockDraft(scope:string,id:string):Promise<BlockDraft|undefined> {
+  if(localDiskEnabled())return readDiskDraft(scope,id);
   const value=await transaction(["meta"],"readonly",tx=>request<BlockDraft|undefined>(tx.objectStore("meta").get(key(scope,id))));
   return value?checked(value,scope,id):undefined;
 }
 /** The draft and its new attachments commit together, outside both caches and the sync queue. */
 export async function writeBlockDraft(scope:string,base:Project,project:Project,files:ReadonlyMap<string,Blob>,expected:string|null):Promise<BlockDraft> {
+  if(localDiskEnabled()){try{return await writeDiskDraft(scope,base,project,files,expected);}catch(error){if((error as {code:string}).code==="STALE_WRITE")throw new DraftChanged();throw error;}}
   const used=new Set(projectMediaIds(project)),originals=new Set(projectMediaIds(base));
   const assets=project.blocks.flatMap(block=>block.media || []);
   for(const asset of assets)if(!originals.has(asset.id) && files.get(asset.id)?.size!==asset.size)throw new Error("Не удалось сохранить вложения черновика. Дождитесь завершения загрузки файлов.");
@@ -34,7 +37,9 @@ export async function writeBlockDraft(scope:string,base:Project,project:Project,
   });
 }
 /** Never discard a newer draft written by a different tab. */
-export async function removeBlockDraft(scope:string,id:string,expected:string):Promise<void> {
+export async function removeBlockDraft(scope:string,id:string,expected:string|null):Promise<void> {
+  if(localDiskEnabled()){try{return await removeDiskDraft(scope,id,expected);}catch(error){if((error as {code:string}).code==="STALE_WRITE")throw new DraftChanged();throw error;}}
+  if(!expected)return;
   await transaction(["meta"],"readwrite",async tx=>{
     const meta=tx.objectStore("meta"),previous=await request<BlockDraft|undefined>(meta.get(key(scope,id)));
     if(previous && previous.revision!==expected)throw new DraftChanged();

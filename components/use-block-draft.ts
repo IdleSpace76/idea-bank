@@ -54,9 +54,10 @@ export function useBlockDraft(scope:string,id:string|undefined,project:Project|n
     cancelTimer();const active=session.current;
     if(active)active.stopped=true;
     await queue.current.catch(()=>{});
-    if(active?.revision)await removeBlockDraft(active.scope,active.base.id,active.revision);
+    if(active)await removeBlockDraft(active.scope,active.base.id,active.revision);
     session.current=null;setRecovery(undefined);setStatus("");setError("");
   }
   async function discard(){if(recovery){await removeBlockDraft(scope,recovery.id,recovery.revision);setRecovery(undefined);}}
-  return {recovery,status,error,start,clear,discard,discover};
+  async function checkpoint(){cancelTimer();await queue.current.catch(()=>{});const active=session.current;return active?{id:active.base.id,revision:active.revision}:undefined;}
+  return {recovery,status,error,start,clear,discard,discover,checkpoint};
 }

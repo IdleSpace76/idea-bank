@@ -8,6 +8,7 @@ import { Download, Eraser, FileArchive, LoaderCircle, RotateCcw, Upload, X } fro
 import { STORAGE_KEY, type Library } from "@/lib/ideas";
 import { createLibraryBackup, readLibraryBackup,prepareLibraryImport,importLibraryBackup, type LibraryBackup,type LibraryImportPlan,type ImportChoice,type BackupSource } from "@/lib/library-backup";
 import { clearLibrary } from "@/lib/library-reset";
+import { exportLegacyBrowserBackup, legacyBrowserIdeaCount } from "@/lib/legacy-browser-backup";
 
 function download(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob), link = document.createElement("a");
@@ -16,7 +17,7 @@ function download(blob: Blob, filename: string) {
 }
 const sizeLabel = (bytes: number) => bytes < 1024 * 1024 ? t("{0} КБ", { 0: (bytes / 1024).toLocaleString(getLocale(), { maximumFractionDigits: 1 }) }) : t("{0} МБ", { 0: (bytes / (1024 * 1024)).toLocaleString(getLocale(), { maximumFractionDigits: 1 }) });
 
-export function BackupControls({ scope, library, locked, readOnly, onBusyChange, onRestored, loadLibrary, onClear,onExample }: { scope?: string; library: Library; locked: boolean; readOnly: boolean; onBusyChange: (busy: boolean) => void; onRestored: (library: Library) => void; loadLibrary?: () => Promise<BackupSource>; onClear?:(expected:Library)=>Promise<Library>;onExample?:()=>Promise<ExampleResult> }) {
+export function BackupControls({ scope, library, locked, readOnly, onBusyChange, onRestored, loadLibrary, onClear,onExample,legacyTransfer=false }: { scope?: string; library: Library; locked: boolean; readOnly: boolean; onBusyChange: (busy: boolean) => void; onRestored: (library: Library) => void; loadLibrary?: () => Promise<BackupSource>; onClear?:(expected:Library)=>Promise<Library>;onExample?:()=>Promise<ExampleResult>;legacyTransfer?:boolean }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false), [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -29,6 +30,19 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
   const resetBase = useRef<Library|null>(null);
   const active = useRef(false);
   const previewBase = useRef<Library | null>(null);
+  const [legacyAvailable,setLegacyAvailable]=useState(false);
+  useEffect(()=>{
+    if(!legacyTransfer)return;
+    let live=true;
+    void legacyBrowserIdeaCount().then(count=>{if(live)setLegacyAvailable(count!==null);},()=>{if(live)setLegacyAvailable(true);});
+    return ()=>{live=false;};
+  },[legacyTransfer]);
+  async function exportLegacy(){
+    if(!begin(t("Собираем прежнюю библиотеку браузера в ZIP…")))return;
+    try{download(await exportLegacyBrowserBackup(setStatus),"idea-bank-browser-transfer.zip");setStatus(t("ZIP прежней библиотеки готов. Импортируйте его, чтобы перенести идеи на диск. Исходные данные браузера сохранены."));}
+    catch(reason){setStatus("");setError(reason instanceof Error?reason.message:t("Не удалось создать архив."));}
+    finally{finish();}
+  }
   useEffect(() => {
     if (!resetRequested) return;
     const dialog = resetDialog.current;
@@ -40,21 +54,23 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
   function finish() { active.current = false; setBusy(false); onBusyChange(false); }
   async function exportZip() {
     if (readOnly || !begin(t(scope?"Получаем данные библиотеки для ZIP…":"Собираем библиотеку и медиа в архив…"))) return;
+    let source:BackupSource|undefined;
     try {
-      const source=loadLibrary?await loadLibrary():{library};
+      source=loadLibrary?await loadLibrary():{library};
       const blob = await createLibraryBackup(source.library,scope,setStatus), now = new Date();
       const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}`;
       download(blob, `idea-bank-${stamp}.zip`); setStatus(t("Архив подготовлен и передан браузеру для скачивания."));
     } catch (reason) { setStatus(""); setError(reason instanceof Error ? reason.message : t("Не удалось создать архив.")); }
-    finally { finish(); }
+    finally {await source?.release?.();finish(); }
   }
   async function inspect(file: File) {
     if (!begin(t("Проверяем библиотеку, медиа и целостность архива…"))) return;
     setPreview(null);
     setImportPlan(null);setChoices({});
-    try { const backup=await readLibraryBackup(file),source=loadLibrary?await loadLibrary():{library};previewBase.current=structuredClone(source.library);const plan=await prepareLibraryImport(backup,previewBase.current,scope,source.cloud);setPreview(backup);setImportPlan(plan); setStatus(t("Архив проверен. Текущая библиотека пока не изменена.")); }
+    let source:BackupSource|undefined;
+    try { const backup=await readLibraryBackup(file);source=loadLibrary?await loadLibrary():{library};previewBase.current=structuredClone(source.library);const plan=await prepareLibraryImport(backup,previewBase.current,scope,source.cloud);setPreview(backup);setImportPlan(plan); setStatus(t("Архив проверен. Текущая библиотека пока не изменена.")); }
     catch (reason) { setStatus(""); setError(reason instanceof Error ? reason.message : t("Не удалось прочитать архив.")); }
-    finally { finish(); }
+    finally {await source?.release?.();finish(); }
   }
   async function restore() {
     if (!importPlan || !begin(t("Объединяем идеи и медиа…"))) return;
@@ -94,6 +110,10 @@ export function BackupControls({ scope, library, locked, readOnly, onBusyChange,
       <button type="button" className="secondary-button" disabled={busy || locked || readOnly} onClick={() => { void exportZip(); }}><Upload />{t("Экспортировать ZIP")}</button>
       <label className={`secondary-button backup-upload ${busy || locked ? "is-disabled" : ""}`}><Download />{t("Импортировать ZIP")}<input type="file" accept=".zip,application/zip,application/x-zip-compressed" aria-label={t("Выбрать архив библиотеки")} disabled={busy || locked} onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void inspect(file); }} /></label>
     </div>
+    {legacyTransfer && legacyAvailable && <div className="legacy-browser-transfer">
+      <p>{t("Найдена прежняя библиотека браузера. Сохраните её в ZIP и импортируйте на диск.")}</p>
+      <button type="button" className="secondary-button" disabled={busy || locked} onClick={()=>{void exportLegacy();}}><Upload />{t("Экспорт прежней библиотеки браузера")}</button>
+    </div>}
     <div className="backup-buttons backup-reset-buttons">
       <button type="button" className="secondary-button" disabled={busy || locked || readOnly} onClick={()=>{void addExample();}}><RotateCcw />{t("Загрузить Example")}</button>
       <button type="button" className="secondary-button danger" disabled={busy || locked || readOnly} onClick={() => { void requestReset(); }}><Eraser />{t("Очистить голову")}</button>

@@ -3,6 +3,7 @@ import { request, transaction } from "./local-database";
 import { registerCloudCache, pruneCacheIn, MEDIA_CACHE_LIMIT, cacheKey, type CacheState } from "./media-cache-store";
 import type { SyncCheckpoint } from "./entity-sync";
 import { translate as t } from "./i18n";
+import {localDiskEnabled,diskSnapshot,diskPage,diskIdea,diskState,initializeDisk,saveDiskLibrary,invalidateDiskCache} from "./disk-client";
 
 export type LocalSnapshot = { library: Library; revision: number };
 export type LocalCatalogCursor = { offset: number; revision: number; sectionId?: string; query?: string };
@@ -26,7 +27,7 @@ async function snapshotIn(tx: IDBTransaction): Promise<LocalSnapshot | null> {
   }));
   return { library: parseLibrary(JSON.stringify({ version: 1, sections, projects })), revision: meta.revision };
 }
-export const readLocalSnapshot = () => transaction(["meta", "sections", "ideas", "blocks"], "readonly", snapshotIn);
+export const readLocalSnapshot = () => localDiskEnabled()?diskSnapshot():transaction(["meta", "sections", "ideas", "blocks"], "readonly", snapshotIn);
 
 async function layoutIn(tx: IDBTransaction): Promise<Layout> {
   const layout = await request<Layout | undefined>(tx.objectStore("meta").get("layout"));
@@ -35,7 +36,7 @@ async function layoutIn(tx: IDBTransaction): Promise<Layout> {
 }
 
 /** Read section metadata without reading any ideas, blocks or media. */
-export const readLocalSections = () => transaction(["meta", "sections"], "readonly", async tx => {
+export const readLocalSections = () => localDiskEnabled()?diskPage({limit:1}).then(page=>({sections:page.sections,revision:page.revision,counts:page.counts})):transaction(["meta", "sections"], "readonly", async tx => {
   const layout = await layoutIn(tx);
   const sections = await Promise.all(layout.sectionIds.map(id => request<Section>(tx.objectStore("sections").get(id))));
   const counts: Record<string, number> = Object.create(null);
@@ -44,7 +45,7 @@ export const readLocalSections = () => transaction(["meta", "sections"], "readon
 });
 
 /** Add a derived navigation index to old databases without reading or rewriting their blocks. */
-export const prepareLocalCatalog = () => transaction(["meta", "ideas"], "readwrite", async tx => {
+export const prepareLocalCatalog = () => localDiskEnabled()?Promise.resolve():transaction(["meta", "ideas"], "readwrite", async tx => {
   const layout = await layoutIn(tx);
   if (layout.catalog) return;
   const ideas = await Promise.all(layout.ideaIds.map(id => request<IdeaRecord>(tx.objectStore("ideas").get(id))));
@@ -53,7 +54,8 @@ export const prepareLocalCatalog = () => transaction(["meta", "ideas"], "readwri
 });
 
 /** Pages follow the persisted catalog order. Revision is local, not a cloud entity version. */
-export async function readLocalCatalogPage(options: { limit?: number; cursor?: LocalCatalogCursor; sectionId?: string; query?: string } = {}): Promise<LocalCatalogPage> {
+export async function readLocalCatalogPage(options: { limit?: number; cursor?: LocalCatalogCursor; sectionId?: string; query?: string;force?:boolean } = {}): Promise<LocalCatalogPage> {
+  if(localDiskEnabled())return diskPage(options);
   const limit = options.limit ?? 24, cursor = options.cursor, query = options.query?.trim().toLowerCase() || undefined;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid catalog page size");
   if (cursor && (!Number.isSafeInteger(cursor.offset) || cursor.offset < 0 || !Number.isSafeInteger(cursor.revision) || cursor.revision < 1)) throw new Error("Invalid catalog cursor");
@@ -80,7 +82,7 @@ export async function readLocalCatalogPage(options: { limit?: number; cursor?: L
 }
 
 /** Read one complete idea, using only its block IDs; never materialize the entire library. */
-export const readLocalIdea = (id: string): Promise<{ idea: Project; revision: number } | null> => transaction(["meta", "sections", "ideas", "blocks"], "readonly", async tx => {
+export const readLocalIdea = (id: string,force=false): Promise<{ idea: Project; revision: number } | null> => localDiskEnabled()?diskIdea(id,force):transaction(["meta", "sections", "ideas", "blocks"], "readonly", async tx => {
   const layout = await layoutIn(tx);
   if (!layout.ideaIds.includes(id)) return null;
   const row = await request<IdeaRecord | undefined>(tx.objectStore("ideas").get(id));
@@ -96,8 +98,8 @@ export async function readLocalLibrary(): Promise<Library> {
   return saved.library;
 }
 export const readLocalRaw = async () => { const state = await readLocalSnapshot(); return state ? JSON.stringify(state.library) : null; };
-export const readMeta = <T,>(key: string) => transaction(["meta"], "readonly", tx => request<T | undefined>(tx.objectStore("meta").get(key)));
-export const readOutbox = () => transaction(["outbox"], "readonly", tx => request<PendingChange[]>(tx.objectStore("outbox").getAll()));
+export const readMeta = async <T,>(key: string):Promise<T|undefined> => {if(localDiskEnabled()){if(key!=="layout")return;const state=await diskState();return state.initialized?{revision:state.revision} as T:undefined;}return transaction(["meta"], "readonly", tx => request<T | undefined>(tx.objectStore("meta").get(key)));};
+export const readOutbox = ():Promise<PendingChange[]> => localDiskEnabled()?Promise.resolve([]):transaction(["outbox"], "readonly", tx => request<PendingChange[]>(tx.objectStore("outbox").getAll()));
 
 /** Provenance and revision identify an automatically generated seed, not a user save. */
 export async function isPristineStarterIn(tx: IDBTransaction): Promise<boolean> {
@@ -173,13 +175,14 @@ function notify(kind:"local"|"remote") {
 export function subscribeLocalChanges(listener: (kind?:"local"|"remote") => void) {
   let channel: BroadcastChannel | null = null;
   try { if (typeof BroadcastChannel !== "undefined") channel = new BroadcastChannel(channelName); } catch { /* Focus refresh remains available. */ }
-  const receive=(event:Event|MessageEvent)=>{const payload="data" in event?event.data:(event as CustomEvent).detail;listener(payload?.kind=== "remote"?"remote":"local");};
+  const receive=(event:Event|MessageEvent)=>{if(localDiskEnabled() && "data" in event)invalidateDiskCache();const payload="data" in event?event.data:(event as CustomEvent).detail;listener(payload?.kind=== "remote"?"remote":"local");};
   if (channel) channel.onmessage = receive;
   window.addEventListener(channelName, receive);
   return () => { channel?.close(); window.removeEventListener(channelName, receive); };
 }
 /** Metadata, outbox and cloud checkpoint are committed together with a stale-write guard. */
 export async function saveLocalLibrary(library: Library, expected: Library | null, options: { remote?: boolean; cloud?: unknown; files?: ReadonlyMap<string, Blob>; recover?: boolean; checkpoint?: unknown; clearOperation?: boolean; mediaAliases?: ReadonlyMap<string,string>; guardScope?:string; clearFrom?:Library } = {}) {
+  if(localDiskEnabled())return saveDiskLibrary(library,expected,options.files);
   const checked = parseLibrary(JSON.stringify(library));
   const sequence = await transaction(["meta", "sections", "ideas", "blocks", "outbox", "media"], "readwrite", async tx => {
     const previous = await snapshotIn(tx);
@@ -241,6 +244,7 @@ async function legacyFile(id: string): Promise<Blob | undefined> {
 }
 /** Old storage is retained untouched. A layout marker becomes visible only after verification. */
 export async function initializeLocalLibrary(seed: () => Promise<{ library: Library; files: ReadonlyMap<string, Blob> }>, options: { ignoreLegacy?: boolean } = {}): Promise<Library> {
+  if(localDiskEnabled())return initializeDisk(seed);
   const existing = await readLocalSnapshot(); if (existing) return existing.library;
   const raw = options.ignoreLegacy ? null : localStorage.getItem(STORAGE_KEY), cloudRaw = options.ignoreLegacy ? null : localStorage.getItem(LEGACY_CLOUD_KEY);
   const source = raw === null ? await seed() : { library: parseLibrary(raw), files: new Map<string, Blob>() };

@@ -208,6 +208,10 @@ export function useLibraryReader(scope: string | undefined, enabled: boolean, ro
     return {version:1,sections:main.page?.sections || (navigation.current.scope===scope?navigation.current.sections:[]),projects:[...ideas.values()]};
   },[main,sidebar,search,detail,ideaId,scope]);
   const counts=main.page?.counts || (navigation.current.scope===scope?navigation.current.counts:{});
+  const updateLocalNavigation=(page:{sections:Section[];counts:Record<string,number>;total:number;revision:number})=>{
+    navigation.current={scope,sections:page.sections,counts:page.counts};
+    setMain(previous=>({...previous,page:previous.page?{...previous.page,sections:page.sections,counts:page.counts,revision:String(page.revision),...(!query?{total:sectionId?page.counts[sectionId] || 0:page.total}:{})}:null}));
+  };
   const cloudError=main.cloudError || main.page?.cloudError || (detail.id===ideaId?detail.cloudError:undefined);
-  return {library,main,sidebar,search,counts,detail:detail.id===ideaId?detail:null,cloudError,networkLoading,migrationRequired:main.migration,authRequired:main.auth || detail.id===ideaId && detail.auth,online,offline:!!scope && (!online || !!main.page?.offline || !!(ideaId && detail.offline)),refresh,refreshLocal,showLocalIdea,loadMore,expandSection,moreSearch};
+  return {library,main,sidebar,search,counts,detail:detail.id===ideaId?detail:null,cloudError,networkLoading,migrationRequired:main.migration,authRequired:main.auth || detail.id===ideaId && detail.auth,online,offline:!!scope && (!online || !!main.page?.offline || !!(ideaId && detail.offline)),refresh,refreshLocal,showLocalIdea,updateLocalNavigation,loadMore,expandSection,moreSearch};
 }

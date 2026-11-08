@@ -7,9 +7,11 @@ import { withSyncLock } from "./sync-lock";
 import { projectMediaIds,removeMediaFiles } from "./media-store";
 import { translate as t } from "./i18n";
 import type { Library } from "./ideas";
+import {localDiskEnabled,clearDiskLibrary} from "./disk-client";
 
 /** Record an explicit reset without seeding Example, hashing files or downloading originals. */
 export async function clearLibrary(scope?:string,expectedLibrary?:Library,legacy=false):Promise<Library> {
+  if(!scope && localDiskEnabled())return clearDiskLibrary();
   const empty:Library={version:1,sections:[],projects:[]};
   const acquired=await withSyncLock(async()=>{
     const expected=await readLocalSnapshot();let baseline=expected?.library || empty,checkpoint:SyncCheckpoint|undefined;

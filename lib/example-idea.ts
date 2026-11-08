@@ -6,10 +6,12 @@ import { overlayIdea } from "./scoped-overlay";
 import { queueScoped } from "./scoped-store";
 import { cloudFetch } from "./cloud-access";
 import { translate as t } from "./i18n";
+import {localDiskEnabled,createDiskExample} from "./disk-client";
 export type ExampleResult={exists:true}|{exists:false;library:Library};
 
 /** Add the bundled idea once, using the same local save/queue as an ordinary new idea. */
 export async function createExample(current:Library,scope?:string):Promise<ExampleResult> {
+  if(!scope && localDiskEnabled())return createDiskExample();
   const snapshot=scope?null:await readLocalSnapshot(),base=scope?current:snapshot?.library;
   if(!base)throw new Error(t("Не удалось прочитать сохранённую библиотеку."));
   const template=demoLibrary.projects[0],pending=scope?await overlayIdea(scope,template.id):undefined;

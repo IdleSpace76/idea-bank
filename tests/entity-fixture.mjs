@@ -5,7 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import ts from "typescript";
 const directory = new URL("../.cache/entity-check/",import.meta.url);
 await mkdir(directory,{ recursive:true });
-for (const name of ["example-media","rich-text","ideas","cloud-library","b2-storage","entity-sync","entity-storage","catalog-storage","storage-read-cache","i18n","translations","library-store","local-database","cloud-state","media-store","cloud-sync","cloud-access","entity-client","media-cache-store","scoped-types","scoped-store","scoped-client","scoped-overlay","reader-cache","reader-batch-types","shared-reader-check","sync-lock"]) {
+for (const name of ["example-media","rich-text","ideas","cloud-library","b2-storage","entity-sync","entity-storage","catalog-storage","storage-read-cache","i18n","translations","library-store","local-database","disk-client","cloud-state","media-store","cloud-sync","cloud-access","entity-client","media-cache-store","scoped-types","scoped-store","scoped-client","scoped-overlay","reader-cache","reader-batch-types","shared-reader-check","sync-lock"]) {
   const source = await readFile(new URL(`../lib/${name}.ts`,import.meta.url),"utf8");
   await writeFile(new URL(`${name}.js`,directory),ts.transpileModule(source,{ compilerOptions:{ module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true } }).outputText);
 }

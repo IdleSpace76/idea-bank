@@ -42,7 +42,7 @@ export type Route = { screen: "home" } | { screen: "section"; id: string } | { s
 
 const date = "2026-11-02T08:00:00.000Z";
 
-/** Public starter content; personal libraries are stored separately in the browser. */
+/** Public starter content; personal libraries are stored separately. */
 export const demoLibrary: Library = {
   version: 1,
   sections: [{ id: "examples", name: "Examples", description: "Start with Example, then create your own sections and ideas.", icon: "lightbulb" }],
@@ -53,11 +53,11 @@ export const demoLibrary: Library = {
     blocks: [
       {
         id: "example-start", heading: "Start with an idea", width: "full",
-        text: "This is Example, the only idea in your starter library. Create a section and add your own idea.\n\nUse the toolbar to make text bold, italic or underlined, add inline code, change colors and sizes, or insert a link.\n\nSave changes with the checkmark button at the bottom right. Sync after saving to make them available on your other devices.",
+        text: "This is Example, the only idea in your starter library. Create a section and add your own idea.\n\nUse the toolbar to make text bold, italic or underlined, add inline code, change colors and sizes, or insert a link.\n\nSave changes with the checkmark button at the bottom right. The cloud version syncs saved changes automatically. Use ZIP export and import to transfer ideas between the local and cloud versions.",
         richText: { type: "doc", content: [
           { type: "paragraph", content: [{ type: "text", text: "This is " }, { type: "text", text: "Example", marks: [{ type: "bold" }] }, { type: "text", text: ", the only idea in your starter library. Create a section and add your own idea." }] },
           { type: "paragraph", content: [{ type: "text", text: "Use the toolbar to make text " }, { type: "text", text: "bold", marks: [{ type: "bold" }] }, { type: "text", text: ", " }, { type: "text", text: "italic", marks: [{ type: "italic" }] }, { type: "text", text: " or " }, { type: "text", text: "underlined", marks: [{ type: "underline" }] }, { type: "text", text: ", add " }, { type: "text", text: "inline code", marks: [{ type: "code" }] }, { type: "text", text: ", change colors and sizes, or insert a link." }] },
-          { type: "paragraph", content: [{ type: "text", text: "Save changes with the checkmark button at the bottom right. Sync after saving to make them available on your other devices." }] }
+          { type: "paragraph", content: [{ type: "text", text: "Save changes with the checkmark button at the bottom right. The cloud version syncs saved changes automatically. Use ZIP export and import to transfer ideas between the local and cloud versions." }] }
         ] }
       },
       {

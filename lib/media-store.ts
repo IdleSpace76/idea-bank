@@ -2,8 +2,10 @@ import { translate as t } from "./i18n";
 import type { MediaAsset, MediaKind, Project } from "./ideas";
 import { cacheKey, type CacheState } from "./media-cache-store";
 import { request, transaction } from "./local-database";
+import {localDiskEnabled,stageDiskFiles,diskMediaFile,discardDiskFiles} from "./disk-client";
 
 export async function saveMediaFiles(files: ReadonlyMap<string, Blob>): Promise<void> {
+  if(localDiskEnabled()){stageDiskFiles(files);return;}
   if (!files.size) return;
   await transaction(["meta","media"], "readwrite", async tx => {
     const entries:CacheState=await request(tx.objectStore("meta").get(cacheKey))||{};
@@ -11,14 +13,16 @@ export async function saveMediaFiles(files: ReadonlyMap<string, Blob>): Promise<
     tx.objectStore("meta").put(entries,cacheKey);
   });
 }
-export const readMediaFile = (id: string): Promise<Blob | undefined> => transaction(["media"], "readonly", tx => request(tx.objectStore("media").get(id)));
+export const readMediaFile = (id: string): Promise<Blob | undefined> => localDiskEnabled()?diskMediaFile(id):transaction(["media"], "readonly", tx => request(tx.objectStore("media").get(id)));
 export async function readMediaFiles(ids: string[]): Promise<Map<string, Blob>> {
+  if(localDiskEnabled()){const values=await Promise.all(ids.map(readMediaFile));return new Map(ids.flatMap((id,index)=>values[index]?[[id,values[index]!] as const]:[]));}
   return transaction(["media"], "readonly", async tx => {
     const values = await Promise.all(ids.map(id => request<Blob | undefined>(tx.objectStore("media").get(id))));
     return new Map(ids.flatMap((id, index) => values[index] ? [[id, values[index]!] as const] : []));
   });
 }
 export async function removeMediaFiles(ids: string[]): Promise<void> {
+  if(localDiskEnabled()){discardDiskFiles(ids);return;}
   if (!ids.length) return;
   await transaction(["meta", "ideas", "blocks", "media"], "readwrite", async tx => {
     const ideas = await request<{ value: Project }[]>(tx.objectStore("ideas").getAll());

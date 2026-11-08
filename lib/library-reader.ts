@@ -183,7 +183,7 @@ export async function loadReaderPage(scope: string | undefined, options: ReaderQ
   const {localOnly=false,force=false,onCached}=typeof load==="boolean"?{localOnly:load}:load;
   if (!scope) {
     await prepareLocalCatalog();
-    const page = await readLocalCatalogPage({...options,cursor:options.cursor ? JSON.parse(options.cursor) as LocalCatalogCursor : undefined}).catch(error=>{
+    const page = await readLocalCatalogPage({...options,force,cursor:options.cursor ? JSON.parse(options.cursor) as LocalCatalogCursor : undefined}).catch(error=>{
       if(error?.code==="STALE_CATALOG")throw new ReaderError("STALE_CATALOG","Список идей изменился. Загрузи его заново.");
       throw error;
     });
@@ -250,7 +250,7 @@ export async function loadReaderPage(scope: string | undefined, options: ReaderQ
 
 export async function loadReaderIdea(scope: string | undefined, id: string, onCached?: (value:ReaderIdea)=>void, localOnly=false,force=false): Promise<ReaderIdea> {
   if (!scope) {
-    const saved = await readLocalIdea(id);
+    const saved = await readLocalIdea(id,force);
     if (!saved) throw new ReaderError("NOT_FOUND","Идея не найдена.");
     return {idea:saved.idea,version:String(saved.revision),offline:false};
   }

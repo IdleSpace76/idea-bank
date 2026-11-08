@@ -4,6 +4,7 @@ import { useEffect, useState, type RefObject } from "react";
 import { getMediaFile } from "./media-cache";
 import { useMediaScope } from "../components/media-scope";
 import { retryCloudAccess } from "./cloud-access";
+import { localDiskEnabled } from "./disk-client";
 
 /** Load at first visibility, then keep the source until the file changes or the preview unmounts. */
 export function useMediaSource(id?: string, file?: Blob, target?: RefObject<HTMLElement | null>) {
@@ -21,6 +22,7 @@ export function useMediaSource(id?: string, file?: Blob, target?: RefObject<HTML
     let cancelled=false,url="";
     setSource("");setError("");
     if(!id || !visible)return;
+    if(!file && localDiskEnabled()){setSource(`/api/local/media/${encodeURIComponent(id)}`);return;}
     async function load(){
       try{
         const blob=file || await getMediaFile(id!,scope);

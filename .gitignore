@@ -19,6 +19,12 @@ playwright-report/
 /private/
 /data/
 /uploads/
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
 **/library.json
 /manifest.json
 /idea-bank-*.json

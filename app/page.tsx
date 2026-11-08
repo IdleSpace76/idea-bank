@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 export default async function Home({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
   const settings = readAuthSettings();
-  if (settings.mode === "local") return <IdeaBank />;
+  if (settings.mode === "local") return <IdeaBank localDisk />;
   if (settings.mode === "invalid") return <AuthScreen configurationError={settings.error} />;
   const session = await getOwnerSession();
   if (session) {
