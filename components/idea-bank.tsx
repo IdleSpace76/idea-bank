@@ -34,7 +34,7 @@ import { BlockEditor, ProjectBlocks } from "./project-blocks";
 import { describeMediaFile, mediaIds, projectMediaIds, removeMediaFiles, saveMediaFiles } from "@/lib/media-store";
 import { MediaScope } from "./media-scope";
 import { useMediaSource } from "@/lib/use-media-source";
-import {configureLocalDisk,diskState,diskIdea,diskPage,saveDiskVisible,diskDraftReceipt,diskBackupSource} from "@/lib/disk-client";
+import {configureLocalDisk,watchDiskChanges,diskState,diskIdea,diskPage,saveDiskVisible,diskDraftReceipt,diskBackupSource} from "@/lib/disk-client";
 import { coverNames, createId, demoLibrary, readRoute, routeHash, summarizeIdea, type Cover, type IdeaSummary, type Library, type MediaAsset, type Project, type Route, type Section, type SectionIcon } from "@/lib/ideas";
 
 type Modal =
@@ -60,6 +60,7 @@ function SectionSymbol({ icon }: { icon: SectionIcon }) {
 
 export function IdeaBank({ account, cloudScope,localDisk=false }: { account?: string; cloudScope?: string;localDisk?:boolean }) {
   const { t } = useI18n();
+  useEffect(()=>localDisk?watchDiskChanges():undefined,[localDisk]);
   const [fullLibrary, setFullLibrary] = useState<Library | null>(null);
   const fullRef = useRef<Library | null>(null); fullRef.current = fullLibrary;
   const [legacySession, setLegacySession] = useState(false);

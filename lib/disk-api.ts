@@ -30,6 +30,7 @@ async function store(){
   if(!connections.ideaBankDiskV3){const pending=DiskLibraryStore.open().then(db=>{scheduleDiskCleanup(db);return db;});connections.ideaBankDiskV3=pending;void pending.catch(()=>{if(connections.ideaBankDiskV3===pending)delete connections.ideaBankDiskV3;});}
   return connections.ideaBankDiskV3;
 }
+export const localDiskStore=store;
 /** Reject non-local requests before opening a database; never reveal filesystem paths in errors. */
 export async function localEndpoint(request:Request,mutation:boolean,run:()=>Promise<unknown>|unknown){
   try{guard(request,mutation);const result=await run();return result instanceof Response?result:Response.json(result,{headers});}

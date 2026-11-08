@@ -1,11 +1,11 @@
 "use server";
 
 import { signIn, signOut } from "@/auth";
-import { readAuthSettings } from "@/lib/auth-settings";
+import { readAuthSettings,agentReturnPath } from "@/lib/auth-settings";
 
-export async function loginWithGitHub() {
+export async function loginWithGitHub(form?:FormData) {
   if (readAuthSettings().mode !== "github") throw new Error("GitHub authentication is unavailable.");
-  await signIn("github", { redirectTo: "/" });
+  await signIn("github", { redirectTo: agentReturnPath(form?.get("agentReturn"),new URL(process.env.AUTH_URL!).origin) });
 }
 
 export async function logout() {

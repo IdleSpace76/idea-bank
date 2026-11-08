@@ -17,3 +17,8 @@ export function readAuthSettings(env: Record<string, string | undefined> = proce
 
 /** Re-check the stable GitHub ID on every session read, including after an owner change. */
 export function isOwner(id: unknown, ownerId: string) { return typeof id === "string" && id === ownerId; }
+/** Only the two agent flows may resume after sign-in; arbitrary return URLs stay blocked. */
+export function agentReturnPath(raw:unknown,origin:string){
+  if(typeof raw!=="string" || raw.length>24000)return "/";
+  try{const value=new URL(raw,origin);return value.origin===origin && ["/api/mcp/oauth/authorize","/mcp/upload"].includes(value.pathname)?`${value.pathname}${value.search}${value.hash}`:"/";}catch{return "/";}
+}

@@ -1,6 +1,6 @@
 import NextAuth, { type NextAuthConfig } from "next-auth";
 import GitHub from "next-auth/providers/github";
-import { isOwner, readAuthSettings } from "@/lib/auth-settings";
+import { isOwner, readAuthSettings,agentReturnPath } from "@/lib/auth-settings";
 
 export function ownerAuthConfig(): NextAuthConfig {
   const settings = readAuthSettings();
@@ -36,7 +36,7 @@ export function ownerAuthConfig(): NextAuthConfig {
         session.user.id = isOwner(token.sub, settings.ownerId) ? token.sub! : "";
         return session;
       },
-      redirect({ url, baseUrl }) { return url === baseUrl || url === `${baseUrl}/` ? url : `${baseUrl}/`; },
+      redirect({ url, baseUrl }) { return `${baseUrl}${agentReturnPath(url,baseUrl)}`; },
     },
   };
 }

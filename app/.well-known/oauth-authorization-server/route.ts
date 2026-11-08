@@ -1,0 +1,4 @@
+import {mcpSettings} from "@/lib/mcp-auth";
+import {agentErrorResponse,agentHeaders} from "@/lib/mcp-http";
+export const dynamic="force-dynamic";
+export function GET(){try{const {issuer}=mcpSettings(),base=`${issuer}/api/mcp/oauth`;return Response.json({issuer,authorization_endpoint:`${base}/authorize`,token_endpoint:`${base}/token`,registration_endpoint:`${base}/register`,revocation_endpoint:`${base}/revoke`,response_types_supported:["code"],grant_types_supported:["authorization_code","refresh_token"],token_endpoint_auth_methods_supported:["none"],revocation_endpoint_auth_methods_supported:["none"],code_challenge_methods_supported:["S256"],scopes_supported:["ideas:read","ideas:write","offline_access"],authorization_response_iss_parameter_supported:true},{headers:{...agentHeaders,"Access-Control-Allow-Origin":"*"}});}catch(error){return agentErrorResponse(error);}}

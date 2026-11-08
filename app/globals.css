@@ -319,6 +319,11 @@ legend { font-size: 12px; color: var(--muted); padding: 0; }
 .backup-reset-buttons { margin-top: 10px; }
 .legacy-browser-transfer { margin-top: 14px; }
 .legacy-browser-transfer > button { width: 100%; font-size: 13px; }
+.agent-upload-page { max-width: 680px; margin: 8vh auto; padding: 28px; border: 1px solid var(--block-border); border-radius: 18px; background: var(--surface); }
+.agent-upload-page h1 { font-size: 28px; line-height: 1.3; margin-bottom: 20px; }
+.agent-upload-page p { margin: 18px 0; font-size: 16px; line-height: 1.7; }
+.agent-upload-page input { display: block; width: 100%; margin: 24px 0; }
+.agent-upload-page .primary-button { font-size: 16px; }
 .reset-confirmation .reset-library-confirm { background: var(--danger); border-color: var(--danger); color: white; }
 .reset-confirmation .reset-library-confirm:hover:not(:disabled) { background: var(--danger); filter: brightness(.9); }
 .backup-status { display: flex; gap: 7px; align-items: flex-start; }

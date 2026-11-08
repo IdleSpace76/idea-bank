@@ -219,6 +219,8 @@ export class CatalogStorage {
     for (const card of cards) for (const id of new Set(card.variants.flatMap(idea => idea ? [idea.sectionId] : []))) sectionCounts[id] = (sectionCounts[id] || 0) + 1;
     return { format: "idea-bank-catalog", version: 1, revision: hash(source.heads), heads: source.heads, sections, pages, shards: references, mediaShards, sectionCounts, count: cards.length, sourceIndex:await this.content(index,reusable) };
   }
+  /** Section navigation without loading a page of idea cards. */
+  async readSections(){return (await this.root()).sections;}
   async readPage(options: { limit?: number; cursor?: string; sectionId?: string; query?: string } = {}): Promise<CatalogPage> {
     const limit = options.limit ?? 24, query = options.query?.trim().toLowerCase() || "";
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || query.length > 200 || (options.sectionId !== undefined && (!options.sectionId || options.sectionId.length > 200))) return invalid();

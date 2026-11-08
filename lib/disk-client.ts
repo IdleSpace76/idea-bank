@@ -12,6 +12,27 @@ const draftRequests=new Map<string,DraftRequest>();let resetRequest:{operationId
 export const localDiskEnabled=()=>enabled;
 export function configureLocalDisk(value:boolean){if(enabled!==value){enabled=value;invalidateDiskCache();staged.clear();operations.clear();draftContexts.clear();draftRequests.clear();clearedDrafts.clear();resetRequest=undefined;exampleRequest=undefined;}}
 export function invalidateDiskCache(){epoch++;state=undefined;stateRequest=undefined;pages.clear();ideas.clear();pending.clear();}
+/** One local event stream per visible page; cloud/B2 is never involved. */
+export function watchDiskChanges(){
+  if(typeof EventSource==="undefined")return ()=>{};
+  let source:EventSource|undefined,timer:ReturnType<typeof setTimeout>|undefined;
+  const connect=()=>{
+    if(document.visibilityState==="hidden"){source?.close();source=undefined;return;}
+    if(source)return;
+    source=new EventSource("/api/local/events");
+    source.onmessage=event=>{
+      let revision:number;try{revision=JSON.parse(event.data).revision;}catch{return;}
+      if(!Number.isSafeInteger(revision) || revision<0)return;
+      if(timer)clearTimeout(timer);
+      timer=setTimeout(()=>{
+        if(!state || revision<=state.revision)return;
+        remember(revision);window.dispatchEvent(new CustomEvent("idea-bank.local.changes",{detail:{kind:"local"}}));
+      },30);
+    };
+  };
+  document.addEventListener("visibilitychange",connect);connect();
+  return ()=>{source?.close();if(timer)clearTimeout(timer);document.removeEventListener("visibilitychange",connect);};
+}
 function remember(revision:number,initialized=true){if(!state || revision>state.revision){if(state){epoch++;pages.clear();ideas.clear();pending.clear();}state={revision,initialized};}}
 async function api<T>(path:string,init:RequestInit={}):Promise<T>{
   const response=await fetch(`/api/local/${path}`,{credentials:"same-origin",cache:"no-store",...init});

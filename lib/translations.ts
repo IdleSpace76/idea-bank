@@ -1,5 +1,20 @@
 /** Interface text only. Never pass user-created content through this dictionary. */
 export const english: Record<string, string> = {
+  "Не удалось прикрепить файл. Попросите агента обновить версию идеи и повторить действие.": "Could not attach the file. Ask the agent to read the latest idea version and try again.",
+  "Выберите файл размером до 1 ГиБ.": "Choose a file up to 1 GiB.",
+  "Выберите GLB или самодостаточный glTF без внешних файлов.": "Choose a GLB or self-contained glTF without external files.",
+  "Проверяем файл…": "Checking the file…",
+  "Загружаем вложение…": "Uploading the attachment…",
+  "Загрузка файла не завершена. Повторите попытку.": "The upload did not finish. Please try again.",
+  "Прикрепляем файл к идее…": "Attaching the file to the idea…",
+  "Вложение сохранено. Можно вернуться к агенту.": "Attachment saved. You can return to the agent.",
+  "Прикрепить файл к идее": "Attach a file to an idea",
+  "Для загрузки войдите как владелец Idea Bank.": "Sign in as the Idea Bank owner to upload.",
+  "Выберите оригинал изображения, видео, аудио или 3D-модели для идеи, подготовленной агентом.": "Choose an original image, video, audio file or 3D model for the idea prepared by the agent.",
+  "Выбрать вложение": "Choose an attachment",
+  "Прикрепить": "Attach",
+  "Ссылка загрузки отсутствует. Попросите агента подготовить её заново.": "The upload link is missing. Ask the agent to prepare a new one.",
+
   "Не удалось прочитать прежнюю библиотеку браузера. Исходные данные не изменены.": "Could not read the old browser library. The original data is unchanged.",
   "В прежней библиотеке браузера не найден файл «{0}». Экспорт остановлен; исходные данные сохранены.": "File “{0}” is missing from the old browser library. Export stopped; the original data is unchanged.",
   "В этом браузере по этому адресу нет прежней локальной библиотеки.": "No old local library was found at this address in this browser.",

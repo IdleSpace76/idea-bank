@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 
 export const dynamic = "force-dynamic";
 
-export default async function Home({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
+export default async function Home({ searchParams }: { searchParams: Promise<{ error?: string;agentReturn?:string }> }) {
   const settings = readAuthSettings();
   if (settings.mode === "local") return <IdeaBank localDisk />;
   if (settings.mode === "invalid") return <AuthScreen configurationError={settings.error} />;
@@ -17,6 +17,6 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
     try { const b2 = readB2Settings(); cloudScope = createHash("sha256").update(`${session.user?.id}:${b2.endpoint}:${b2.bucket}`).digest("hex"); } catch { /* Local library remains available until B2 is configured. */ }
     return <IdeaBank account={session.user?.name || "GitHub"} cloudScope={cloudScope} />;
   }
-  const { error } = await searchParams;
-  return <AuthScreen error={error} />;
+  const { error,agentReturn } = await searchParams;
+  return <AuthScreen error={error} agentReturn={agentReturn} />;
 }
