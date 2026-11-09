@@ -39,7 +39,8 @@ async function scenario(client,local=true){
 }
 let stdio,client;
 try{
-  stdio=new StdioClientTransport({command:process.execPath,args:["--import","tsx","scripts/mcp-local.mts","--data-dir",data,"--allow-files",path.dirname(image)],cwd:root,stderr:"pipe",env:Object.fromEntries(Object.entries(process.env).filter(([,value])=>typeof value==="string"))});
+  // Match a desktop client launched outside the checkout; Windows ESM loaders require file URLs.
+  stdio=new StdioClientTransport({command:process.execPath,args:["--import",new URL("../node_modules/tsx/dist/loader.mjs",import.meta.url).href,path.join(root,"scripts/mcp-local.mts"),"--data-dir",data,"--allow-files",path.dirname(image)],cwd:directory,stderr:"pipe",env:Object.fromEntries(Object.entries(process.env).filter(([,value])=>typeof value==="string"))});
   const diagnostics=[];stdio.stderr?.on("data",chunk=>diagnostics.push(String(chunk)));
   client=new Client({name:"idea-bank-protocol-check",version:"1.0.0"});await client.connect(stdio);
   await client.listTools();await assert.rejects(stat(data),error=>error.code==="ENOENT");
