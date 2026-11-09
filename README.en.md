@@ -1,8 +1,8 @@
 # Idea Bank
 
 <p>
-  <a href="README.md"><kbd>Русский</kbd></a>
-  <a href="README.en.md"><kbd>English</kbd></a>
+  <a href="README.md"><img src="docs/assets/language-ru.svg" alt="Русский" width="112" height="36" /></a>
+  <a href="README.en.md"><img src="docs/assets/language-en.svg" alt="English" width="112" height="36" /></a>
 </p>
 
 Idea Bank stores ideas and related materials: text notes, images, video, audio, and 3D models. Ideas are grouped into sections, and each idea's content is arranged in blocks.

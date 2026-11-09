@@ -1,8 +1,8 @@
 # Idea Bank
 
 <p>
-  <a href="README.md"><kbd>Русский</kbd></a>
-  <a href="README.en.md"><kbd>English</kbd></a>
+  <a href="README.md"><img src="docs/assets/language-ru.svg" alt="Русский" width="112" height="36" /></a>
+  <a href="README.en.md"><img src="docs/assets/language-en.svg" alt="English" width="112" height="36" /></a>
 </p>
 
 Idea Bank предназначен для хранения идей и связанных с ними материалов: текстовых заметок, изображений, видео, аудио и 3D-моделей. Идеи объединяются в разделы, а содержимое каждой идеи размещается в отдельных блоках.
