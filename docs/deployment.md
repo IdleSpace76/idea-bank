@@ -1,5 +1,7 @@
 # Личный Idea Bank на Vercel и Backblaze B2
 
+[Русский](deployment.md) · [English](en/deployment.md)
+
 Настройка личного сайта с входом через GitHub и синхронизацией через Backblaze B2. Доступ получает только аккаунт владельца.
 
 ## Что подготовить
